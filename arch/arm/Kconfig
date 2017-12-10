@@ -49,6 +49,25 @@ config SYS_SUPPORTS_APM_EMULATION
 config HAVE_SCHED_CLOCK
 	bool
 
+config ARCH_SCHED_CLOCK
+	bool
+	help
+	  Allow the default sched_clock() to be overloaded at runtime.
+	  Use this option if you build a kernel for a platform with
+	  multiplee sched_clock sources, one of which will be selected
+	  at runtime.
+
+config CPU_FREQ_SDP1202_DEBUG
+	bool "CPUfreq debug print"
+	depends on CPU_FREQ_SDP1202
+	default n
+
+config CPU_FREQ_SDP1207
+	bool "CPUfreq support for SDP1207"
+	depends on CPU_FREQ && (ARCH_SDP1207 || ARCH_SDP1207FPGA)
+	default y
+
+
 config GENERIC_GPIO
 	bool
 
@@ -233,6 +252,16 @@ config MMU
 choice
 	prompt "ARM system type"
 	default ARCH_VERSATILE
+
+config ARCH_CCEP
+        bool "Custom Consumer Electronics Platform"
+	select ARM_AMBA
+	select HAVE_CLK
+	select ARCH_HAS_HOLES_MEMORYMODEL
+	select MIGHT_HAVE_PCI
+	select ARCH_HAS_CPUFREQ
+	help
+		This enables support for system based on Samsung SDPxxxx
 
 config ARCH_INTEGRATOR
 	bool "ARM Ltd. Integrator family"
@@ -1006,6 +1035,28 @@ source "arch/arm/mach-vt8500/Kconfig"
 
 source "arch/arm/mach-w90x900/Kconfig"
 
+source "arch/arm/mach-ccep/Kconfig"
+source "arch/arm/plat-ccep/Kconfig"
+
+if ARCH_CCEP
+choice
+	prompt "Timer type"
+	default SDP_HR_TIMER64
+
+config  SDP_TICK_TIMER64
+	bool "Use legacy tick timer"
+
+config 	SDP_HR_TIMER64
+	bool "Use High Resolution Timer"
+	select GENERIC_TIME
+	select GENERIC_CLOCKEVENTS
+#	select TICK_ONESHOT
+#	select NO_HZ
+#	select HIGH_RES_TIMERS
+
+endchoice # Timer type
+endif
+
 # Definitions to make life easier
 config ARCH_ACORN
 	bool
@@ -1324,11 +1375,38 @@ config PL310_ERRATA_769419
 	  on systems with an outer cache, the store buffer is drained
 	  explicitly.
 
+config ARM_ERRATA_775420
+       bool "ARM errata: A data cache maintenance operation which aborts, might lead to deadlock"
+       depends on CPU_V7
+       help
+         This option enables the workaround for the 775420 Cortex-A9 (r2p2,
+         r2p6,r2p8,r2p10,r3p0) erratum. In case a date cache maintenance
+         operation aborts with MMU exception, it might cause the processor
+         deadlock. This workaround puts DSB before executing ISB at the
+         beginning of the abort exception handler.
+
 endmenu
 
 menu "Kernel Features"
 
 source "kernel/time/Kconfig"
+
+config BD_CACHE_ENABLED
+	bool "BD Cache Enable"
+	default y
+	help
+	   Blu-ray cache enable/disable.If BD_CACHE is enable it :-
+	   Implements readpages address space operation for UDF,
+	   Increased VM_MAX_READAHEAD to 512K from 128K
+	   Increased ATA_MAX_SECTORS to 1024 from 256
+
+config SSIF_EXT_CACHE
+       bool "BD UDF Extents Cache (for 3D BD)"
+       default y
+       help
+         The 3D Blu-ray has many extents. So it make slow read problem when play it.
+         This problem also occur even we play 3D Blu-ray with 2D mode.
+         So remember last accessed inode to enhance read performance of 3D Blu-ray.
 
 config SMP
 	bool "Symmetric Multi-Processing"
@@ -1337,9 +1415,11 @@ config SMP
 	depends on REALVIEW_EB_ARM11MP || REALVIEW_EB_A9MP || \
 		 MACH_REALVIEW_PB11MP || MACH_REALVIEW_PBX || ARCH_OMAP4 || \
 		 ARCH_EXYNOS4 || ARCH_TEGRA || ARCH_U8500 || ARCH_VEXPRESS_CA9X4 || \
-		 ARCH_MSM_SCORPIONMP || ARCH_SHMOBILE
+		 ARCH_MSM_SCORPIONMP || ARCH_SHMOBILE || ARCH_MSTAR_CA9X4 || \
+		 ARCH_CCEP_SMP
+	depends on MMU
 	select USE_GENERIC_SMP_HELPERS
-	select HAVE_ARM_SCU if !ARCH_MSM_SCORPIONMP
+	select HAVE_ARM_SCU if !(ARCH_MSM_SCORPIONMP || ARCH_SDP1202FPGA || ARCH_SDP1202)
 	help
 	  This enables support for systems with more than one CPU. If you have
 	  a system with only one CPU, like most personal computers, say N. If
@@ -1423,7 +1503,7 @@ config LOCAL_TIMERS
 	bool "Use local timer interrupts"
 	depends on SMP
 	default y
-	select HAVE_ARM_TWD if (!ARCH_MSM_SCORPIONMP && !EXYNOS4_MCT)
+	select HAVE_ARM_TWD if (!ARCH_MSM_SCORPIONMP && !EXYNOS4_MCT && !ARCH_CCEP_SOC_CA15)
 	help
 	  Enable support for local timers on SMP platforms, rather then the
 	  legacy IPI broadcast method.  Local timers allows the system
@@ -1439,6 +1519,7 @@ config HZ
 	default OMAP_32K_TIMER_HZ if ARCH_OMAP && OMAP_32K_TIMER
 	default AT91_TIMER_HZ if ARCH_AT91
 	default SHMOBILE_TIMER_HZ if ARCH_SHMOBILE
+	default 250 if ARCH_CCEP
 	default 100
 
 config THUMB2_KERNEL
@@ -1534,6 +1615,10 @@ config ARCH_SELECT_MEMORY_MODEL
 config HAVE_ARCH_PFN_VALID
 	def_bool ARCH_HAS_HOLES_MEMORYMODEL || !SPARSEMEM
 
+config HOLES_IN_ZONE
+       bool
+       depends on SPARSEMEM
+	default y
 config HIGHMEM
 	bool "High Memory Support"
 	depends on MMU
@@ -1569,7 +1654,7 @@ config FORCE_MAX_ZONEORDER
 	int "Maximum zone order" if ARCH_SHMOBILE
 	range 11 64 if ARCH_SHMOBILE
 	default "9" if SA1111
-	default "11"
+	default "9"
 	help
 	  The kernel memory allocator divides physically contiguous memory
 	  blocks into "zones", where each zone is a power of two number of
@@ -1951,6 +2036,10 @@ config CPU_FREQ_S3C24XX_DEBUGFS
 	help
 	  Export status information via debugfs.
 
+config CPU_FREQ_SDP1202
+	bool "CPUfreq support for SDP1202"
+	depends on CPU_FREQ && (ARCH_SDP1202 || ARCH_SDP1202FPGA)
+
 endif
 
 source "drivers/cpuidle/Kconfig"
@@ -2002,6 +2091,7 @@ config FPE_FASTFPE
 config VFP
 	bool "VFP-format floating point maths"
 	depends on CPU_V6 || CPU_V6K || CPU_ARM926T || CPU_V7 || CPU_FEROCEON
+	depends on !ARCH_CCEP_DISABLE_VFP   # add tukho.kim 120526
 	help
 	  Say Y to include VFP support code in the kernel. This is needed
 	  if your hardware includes a VFP unit.
@@ -2019,6 +2109,7 @@ config VFPv3
 config NEON
 	bool "Advanced SIMD (NEON) Extension support"
 	depends on VFPv3 && CPU_V7
+	depends on !ARCH_CCEP_DISABLE_NEON   # add tukho.kim 120526
 	help
 	  Say Y to include support code for NEON, the ARMv7 Advanced SIMD
 	  Extension.
@@ -2053,6 +2144,8 @@ config ARCH_SUSPEND_POSSIBLE
 
 endmenu
 
+source "arch/arm/Kconfig.Secure"
+
 source "net/Kconfig"
 
 source "drivers/Kconfig"
@@ -2060,6 +2153,8 @@ source "drivers/Kconfig"
 source "fs/Kconfig"
 
 source "arch/arm/Kconfig.debug"
+
+source "arch/arm/Kconfig.VDLP"
 
 source "security/Kconfig"
 

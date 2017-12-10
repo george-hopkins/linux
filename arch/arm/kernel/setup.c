@@ -825,6 +825,9 @@ static struct machine_desc * __init setup_machine_tags(unsigned int nr)
 		 * is located in the first MB of RAM.  Anything else will
 		 * fault and silently hang the kernel at this point.
 		 */
+#ifdef CONFIG_ARM_PATCH_PHYS_VIRT
+		mdesc->boot_params += PHYS_OFFSET;
+#endif
 		if (mdesc->boot_params < PHYS_OFFSET ||
 		    mdesc->boot_params >= PHYS_OFFSET + SZ_1M) {
 			printk(KERN_WARNING
@@ -979,6 +982,10 @@ static const char *hwcap_str[] = {
 	"neon",
 	"vfpv3",
 	"vfpv3d16",
+        "tls",
+        "vfpv4",
+        "idiva",
+        "idivt",
 	NULL
 };
 
@@ -1066,3 +1073,11 @@ const struct seq_operations cpuinfo_op = {
 	.stop	= c_stop,
 	.show	= c_show
 };
+
+#ifdef CONFIG_BOOTPROFILE
+/* pass to boot chart solution */
+const char *bc_get_cpu_name(void)
+{
+	return cpu_name;
+}
+#endif /* CONFIG_BOOTPROFILE */

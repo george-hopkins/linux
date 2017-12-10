@@ -757,7 +757,11 @@ static int __init early_vmalloc(char *arg)
 }
 early_param("vmalloc", early_vmalloc);
 
+#ifdef CONFIG_CMA
+phys_addr_t lowmem_limit __initdata = 0;
+#else
 static phys_addr_t lowmem_limit __initdata = 0;
+#endif
 
 void __init sanity_check_meminfo(void)
 {

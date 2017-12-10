@@ -36,6 +36,7 @@
 #include <linux/kallsyms.h>
 #include <linux/proc_fs.h>
 #include <linux/ftrace.h>
+#include <linux/delay.h>
 
 #include <asm/system.h>
 #include <asm/mach/arch.h>
@@ -50,6 +51,73 @@
 #endif
 
 unsigned long irq_err_count;
+#ifdef CONFIG_ARCH_CCEP
+extern int g_irq_print;
+
+void show_irq(void)
+{
+	int i, cpu;
+	struct irq_desc *desc;
+	struct irqaction *action;
+	unsigned long flags;
+	char cpuname[12];
+#ifdef CONFIG_IRQ_TIME
+        unsigned int cu_cpu = smp_processor_id();
+        struct timeval now;
+#endif
+	printk( KERN_ALERT "=============================================================\n");
+	printk( KERN_ALERT "interrupt monitor\n");
+	printk( KERN_ALERT "-------------------------------------------------------------\n");
+
+	printk("    ");
+	for_each_present_cpu(cpu) {
+		sprintf(cpuname, "CPU%d", cpu);
+		printk(" %10s", cpuname);
+	}
+	printk("\n");
+
+	for(i = 0; i < nr_irqs; i++)
+	{
+		desc = irq_to_desc(i);
+		raw_spin_lock_irqsave(&desc->lock, flags);
+		action = desc->action;
+		if (!action)
+			goto unlock;
+
+		printk("%3d: ", i);
+		for_each_present_cpu(cpu)
+			printk("%10u ", kstat_irqs_cpu(i, cpu));
+		printk(" %10s", desc->name ? : "-");
+		printk("  %s", action->name);
+
+		for (action = action->next; action; action = action->next)
+			printk(", %s", action->name);
+#ifdef CONFIG_IRQ_TIME
+		printk("  (max %d usec)",desc->runtime);
+#endif
+
+		printk("\n");
+unlock:
+		raw_spin_unlock_irqrestore(&desc->lock, flags);
+
+	}
+	printk("Err: %10lu\n", irq_err_count);
+
+	printk( KERN_ALERT "=============================================================\n");
+#ifdef CONFIG_IRQ_TIME
+                do_gettimeofday(&now);
+		printk(KERN_ERR"IRQ : %d CPU : %d\n",irq_desc_last[cu_cpu].irq,cu_cpu);
+                if(irq_desc_last[cu_cpu].name)
+                        printk(KERN_ERR"LAST IRQ NAME : %s",irq_desc_last[cu_cpu].name);
+                printk(KERN_ERR"LAST IRQ TIME : %d usec ",irq_desc_last[cu_cpu].last_time);
+                printk(KERN_ERR" NOW : %d usec ",(now.tv_sec*1000000) + now.tv_usec);
+                printk(KERN_ERR" IRQ WATCHDOG : %d usec\n",((now.tv_sec*1000000) + now.tv_usec) - irq_desc_last[cu_cpu].last_time);
+	printk( KERN_ALERT "=============================================================\n");
+#endif
+
+}
+EXPORT_SYMBOL(show_irq);
+#endif
 
 int arch_show_interrupts(struct seq_file *p, int prec)
 {
@@ -76,6 +144,14 @@ asm_do_IRQ(unsigned int irq, struct pt_regs *regs)
 {
 	struct pt_regs *old_regs = set_irq_regs(regs);
 
+#if defined(CONFIG_ARCH_CCEP) && defined(CONFIG_ARM_GIC) && !(defined(CONFIG_ARCH_SDP1202) || defined(CONFIG_ARCH_SDP1207))
+	udelay(2);
+#endif
+
+#ifdef CONFIG_ARCH_CCEP
+	if(g_irq_print)show_irq();
+#endif
+
 	irq_enter();
 
 	/*
@@ -88,6 +164,29 @@ asm_do_IRQ(unsigned int irq, struct pt_regs *regs)
 		ack_bad_irq(irq);
 	} else {
 		generic_handle_irq(irq);
+
+	       /* VDLinux 3.x , based VDLP.4.2.1.x default patch No.12,
+        	  detect kernel stack overflow, SP Team 2010-02-08 */
+#ifdef CONFIG_DEBUG_STACKOVERFLOW
+#ifndef STACK_WARN
+# define STACK_WARN (THREAD_SIZE/8)
+#endif
+	        /* Debugging check for stack overflow */
+		{
+	                register unsigned long sp asm ("sp");
+	                unsigned long thread_info ;
+	                extern void print_modules(void);
+	                thread_info =(sp & ~(THREAD_SIZE - 1));
+
+	               if (unlikely(sp < thread_info + sizeof(struct thread_info) + STACK_WARN)) {
+        	               printk(KERN_ERR "stack overflow: 0x%lx\n", sp);
+                	       print_modules();
+	                       show_regs(get_irq_regs());
+        	               dump_stack();
+        	       }
+		}
+#endif
+
 	}
 
 	/* AT91 specific workaround */

@@ -182,6 +182,9 @@ void cpu_idle(void)
 
 	/* endless idle loop with no priority at all */
 	while (1) {
+#ifdef CONFIG_CPU_FREQ_GOV_INTERACTIVE
+		idle_notifier_call_chain(IDLE_START);
+#endif
 		tick_nohz_stop_sched_tick(1);
 		leds_event(led_idle_start);
 		while (!need_resched()) {
@@ -212,6 +215,9 @@ void cpu_idle(void)
 		}
 		leds_event(led_idle_end);
 		tick_nohz_restart_sched_tick();
+#ifdef CONFIG_CPU_FREQ_GOV_INTERACTIVE		
+		idle_notifier_call_chain(IDLE_END);
+#endif
 		preempt_enable_no_resched();
 		schedule();
 		preempt_disable();
@@ -365,6 +371,10 @@ copy_thread(unsigned long clone_flags, unsigned long stack_start,
 	*childregs = *regs;
 	childregs->ARM_r0 = 0;
 	childregs->ARM_sp = stack_start;
+
+#ifdef CONFIG_SHOW_FAULT_TRACE_INFO
+    p->user_ssp = stack_start;
+#endif
 
 	memset(&thread->cpu_context, 0, sizeof(struct cpu_context_save));
 	thread->cpu_context.sp = (unsigned long)childregs;

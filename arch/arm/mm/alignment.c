@@ -95,6 +95,10 @@ static const char *usermode_action[] = {
 	"signal+warn"
 };
 
+#ifdef CONFIG_SHOW_FAULT_TRACE_INFO
+extern void show_info(struct task_struct *task, struct pt_regs *regs, unsigned long addr);
+#endif
+
 static int alignment_proc_show(struct seq_file *m, void *v)
 {
 	seq_printf(m, "User:\t\t%lu\n", ai_user);
@@ -124,8 +128,13 @@ static ssize_t alignment_proc_write(struct file *file, const char __user *buffer
 	if (count > 0) {
 		if (get_user(mode, buffer))
 			return -EFAULT;
-		if (mode >= '0' && mode <= '5')
-			ai_usermode = mode - '0';
+		if (mode >= '0' && mode <= '5') {
+			/* forbids user to change alignment policy by /proc/cpu/alignment access, VDLP 2.x 2011-08-18 */
+			printk(KERN_ALERT "##### VDLinux Warning msg, Pid [%d], comm :%s, VD forbids user to change unaligned access policy. (%d)\n", 
+					task_pid_nr(current), current->comm, (mode - '0'));
+			return count;
+			//ai_usermode = mode - '0';
+		}
 	}
 	return count;
 }
@@ -727,6 +736,11 @@ do_alignment(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 	int isize = 4;
 	int thumb2_32b = 0;
 
+#ifdef CONFIG_ACCURATE_COREDUMP
+	if (user_mode(regs) && (ai_usermode & UM_SIGNAL))
+		early_coredump_wait(SIGBUS);
+#endif
+
 	instrptr = instruction_pointer(regs);
 
 	fs = get_fs();
@@ -883,9 +897,18 @@ do_alignment(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 	if (ai_usermode & UM_FIXUP)
 		goto fixup;
 
-	if (ai_usermode & UM_SIGNAL)
+	if (ai_usermode & UM_SIGNAL){
+#ifdef CONFIG_SHOW_FAULT_TRACE_INFO
+		/* add unaligned access bus error msg, VDLP 2011-08-18 */	
+		printk(KERN_ALERT "##### Unaligned access bus error: Pid [%d], comm: %s, PC=0x%08lx Instr=0x%0*lx\n",
+			task_pid_nr(current),
+			current->comm, instrptr,
+			isize << 1,
+			isize == 2 ? tinstr : instr);
+        show_info(current, regs, 0); 
+#endif
 		force_sig(SIGBUS, current);
-	else {
+	}else {
 		/*
 		 * We're about to disable the alignment trap and return to
 		 * user space.  But if an interrupt occurs before actually
@@ -933,10 +956,15 @@ static int __init alignment_init(void)
 	 * making any progress.
 	 */
 	if (cpu_architecture() >= CPU_ARCH_ARMv6 && (cr_alignment & CR_U)) {
+#ifdef CONFIG_DISABLE_UNALIGNED_ACCESS
+		/* VDLinux, disable unaligned accesss support, 2010.11.18 */
+		ai_usermode = UM_SIGNAL;
+#else  /* original codes */
 		cr_alignment &= ~CR_A;
 		cr_no_alignment &= ~CR_A;
 		set_cr(cr_alignment);
 		ai_usermode = UM_FIXUP;
+#endif
 	}
 
 	hook_fault_code(1, do_alignment, SIGBUS, BUS_ADRALN,

@@ -31,6 +31,12 @@ asmlinkage void do_local_timer(struct pt_regs *);
 
 #define local_timer_ack()	twd_timer_ack()
 
+#elif defined(CONFIG_HAVE_ARM_GT)
+
+#include "mach/generictimer.h"
+
+#define local_timer_ack()	gt_timer_ack()
+
 #else
 
 /*

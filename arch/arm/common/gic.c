@@ -33,6 +33,12 @@
 #include <asm/mach/irq.h>
 #include <asm/hardware/gic.h>
 
+#ifdef CONFIG_USE_EXT_GIC
+#include <mach/ccep_soc.h>
+
+extern unsigned int gic_bank_offset;
+#endif
+
 static DEFINE_SPINLOCK(irq_controller_lock);
 
 /* Address of GIC 0 CPU interface */
@@ -66,13 +72,21 @@ static struct gic_chip_data gic_data[MAX_GIC_NR] __read_mostly;
 static inline void __iomem *gic_dist_base(struct irq_data *d)
 {
 	struct gic_chip_data *gic_data = irq_data_get_irq_chip_data(d);
+#ifdef CONFIG_USE_EXT_GIC
+	return VA_GIC_DIST_BASE + gic_bank_offset * smp_processor_id();
+#else
 	return gic_data->dist_base;
+#endif
 }
 
 static inline void __iomem *gic_cpu_base(struct irq_data *d)
 {
 	struct gic_chip_data *gic_data = irq_data_get_irq_chip_data(d);
+#ifdef CONFIG_USE_EXT_GIC
+	return VA_GIC_CPU_BASE + gic_bank_offset * smp_processor_id();
+#else
 	return gic_data->cpu_base;
+#endif
 }
 
 static inline unsigned int gic_irq(struct irq_data *d)
@@ -272,7 +286,11 @@ static void __init gic_dist_init(struct gic_chip_data *gic,
 	cpumask |= cpumask << 8;
 	cpumask |= cpumask << 16;
 
+#if defined(CONFIG_ARM_TRUSTZONE) && defined(CONFIG_ARCH_SDP1202)
+	writel_relaxed(1, base + GIC_DIST_CTRL);
+#else
 	writel_relaxed(0, base + GIC_DIST_CTRL);
+#endif
 
 	/*
 	 * Find out how many interrupts are supported.
@@ -298,8 +316,13 @@ static void __init gic_dist_init(struct gic_chip_data *gic,
 	/*
 	 * Set priority on all global interrupts.
 	 */
+#if defined(CONFIG_ARM_TRUSTZONE) && defined(CONFIG_ARCH_SDP1202)
+	for (i = 32; i < gic_irqs; i += 4)
+		writel_relaxed(0xd0d0d0d0, base + GIC_DIST_PRI + i * 4 / 4);
+#else
 	for (i = 32; i < gic_irqs; i += 4)
 		writel_relaxed(0xa0a0a0a0, base + GIC_DIST_PRI + i * 4 / 4);
+#endif
 
 	/*
 	 * Disable all interrupts.  Leave the PPI and SGIs alone
@@ -324,7 +347,11 @@ static void __init gic_dist_init(struct gic_chip_data *gic,
 		set_irq_flags(i, IRQF_VALID | IRQF_PROBE);
 	}
 
+#if defined(CONFIG_ARM_TRUSTZONE) && defined(CONFIG_ARCH_SDP1202)
+	writel_relaxed(3, base + GIC_DIST_CTRL);
+#else
 	writel_relaxed(1, base + GIC_DIST_CTRL);
+#endif
 }
 
 static void __cpuinit gic_cpu_init(struct gic_chip_data *gic)
@@ -343,11 +370,23 @@ static void __cpuinit gic_cpu_init(struct gic_chip_data *gic)
 	/*
 	 * Set priority on PPI and SGI interrupts
 	 */
+
+#if defined(CONFIG_ARM_TRUSTZONE) && defined(CONFIG_ARCH_SDP1202)
+	for (i = 0; i < 32; i += 4)
+		writel_relaxed(0xd0d0d0d0, dist_base + GIC_DIST_PRI + i * 4 / 4);
+	
+	writel_relaxed(0xff, base + GIC_CPU_PRIMASK);
+	writel_relaxed(0x1f, base + GIC_CPU_CTRL);
+#elif defined(CONFIG_ARM_TRUSTZONE) && defined(CONFIG_ARCH_EDISON)
 	for (i = 0; i < 32; i += 4)
 		writel_relaxed(0xa0a0a0a0, dist_base + GIC_DIST_PRI + i * 4 / 4);
-
+#else
+	for (i = 0; i < 32; i += 4)
+		writel_relaxed(0xa0a0a0a0, dist_base + GIC_DIST_PRI + i * 4 / 4);
+	
 	writel_relaxed(0xf0, base + GIC_CPU_PRIMASK);
 	writel_relaxed(1, base + GIC_CPU_CTRL);
+#endif
 }
 
 void __init gic_init(unsigned int gic_nr, unsigned int irq_start,
@@ -398,6 +437,10 @@ void gic_raise_softirq(const struct cpumask *mask, unsigned int irq)
 	dsb();
 
 	/* this always happens on GIC0 */
+#if defined(CONFIG_ARM_TRUSTZONE) && defined(CONFIG_ARCH_SDP1202)
+	writel_relaxed(map << 16 | irq | 0x8000, gic_data[0].dist_base + GIC_DIST_SOFTINT);
+#else
 	writel_relaxed(map << 16 | irq, gic_data[0].dist_base + GIC_DIST_SOFTINT);
+#endif
 }
 #endif
