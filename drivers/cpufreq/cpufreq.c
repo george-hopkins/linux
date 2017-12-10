@@ -213,6 +213,30 @@ static void adjust_jiffies(unsigned long val, struct cpufreq_freqs *ci)
 			"for frequency %u kHz\n", loops_per_jiffy, ci->new);
 	}
 }
+#elif defined(CONFIG_ARCH_CCEP)
+static unsigned long l_p_j_ref;
+static unsigned int  l_p_j_ref_freq;
+
+void adjust_jiffies(unsigned long val, struct cpufreq_freqs *ci)
+{
+	if (ci->flags & CPUFREQ_CONST_LOOPS)
+		return;
+
+	if (!l_p_j_ref_freq) {
+		l_p_j_ref = loops_per_jiffy;
+		l_p_j_ref_freq = ci->old;
+		pr_debug("saving %lu as reference value for loops_per_jiffy; "
+			"freq is %u kHz\n", l_p_j_ref, l_p_j_ref_freq);
+	}
+	if ((val == CPUFREQ_PRECHANGE  && ci->old < ci->new) ||
+	    (val == CPUFREQ_POSTCHANGE && ci->old > ci->new) ||
+	    (val == CPUFREQ_RESUMECHANGE || val == CPUFREQ_SUSPENDCHANGE)) {
+		loops_per_jiffy = cpufreq_scale(l_p_j_ref, l_p_j_ref_freq,
+								ci->new);
+		pr_debug("scaling loops_per_jiffy to %lu "
+			"for frequency %u kHz\n", loops_per_jiffy, ci->new);
+	}
+}
 #else
 static inline void adjust_jiffies(unsigned long val, struct cpufreq_freqs *ci)
 {
