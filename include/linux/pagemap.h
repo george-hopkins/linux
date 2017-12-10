@@ -24,6 +24,10 @@ enum mapping_flags {
 	AS_ENOSPC	= __GFP_BITS_SHIFT + 1,	/* ENOSPC on async write */
 	AS_MM_ALL_LOCKS	= __GFP_BITS_SHIFT + 2,	/* under mm_take_all_locks() */
 	AS_UNEVICTABLE	= __GFP_BITS_SHIFT + 3,	/* e.g., ramdisk, SHM_LOCK */
+#if defined (CONFIG_BD_CACHE_ENABLED)
+	AS_DIRECT  =   __GFP_BITS_SHIFT + 4,  /* DIRECT_IO specified on file op */
+#endif
+	AS_EBAD		= __GFP_BITS_SHIFT + 5 /* Bad Sector Error bit */
 };
 
 static inline void mapping_set_error(struct address_space *mapping, int error)

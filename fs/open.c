@@ -1005,6 +1005,10 @@ long do_sys_open(int dfd, const char __user *filename, int flags, int mode)
 			} else {
 				fsnotify_open(f);
 				fd_install(fd, f);
+#ifdef CONFIG_BD_CACHE_ENABLED
+				if(f->f_flags & O_BDCACHE)          
+					set_bit(AS_DIRECT, &f->f_mapping->flags);       
+#endif
 			}
 		}
 		putname(tmp);

@@ -144,6 +144,9 @@ void blk_rq_init(struct request_queue *q, struct request *rq)
 	rq->start_time = jiffies;
 	set_start_time_ns(rq);
 	rq->part = NULL;
+#if defined (CONFIG_BD_CACHE_ENABLED)
+        clear_bit(__REQ_DIRECTIO, (unsigned long *)&rq->cmd_flags);
+#endif
 }
 EXPORT_SYMBOL(blk_rq_init);
 
@@ -1119,6 +1122,12 @@ static bool bio_attempt_back_merge(struct request_queue *q, struct request *req,
 
 	drive_stat_acct(req, 0);
 	elv_bio_merged(q, req, bio);
+#if defined (CONFIG_BD_CACHE_ENABLED)
+	if (test_bit(BIO_DIRECT, (unsigned long *)&bio->bi_flags)) {
+		/*printk(KERN_DEBUG "%s: ELEVATOR_BACK_MERGE, BIO_DIRECT->__REQ_DIRECTIO\n", __FUNCTION__);*/
+		set_bit(__REQ_DIRECTIO, (unsigned long *)&req->cmd_flags);
+	}
+#endif
 	return true;
 }
 
@@ -1150,6 +1159,12 @@ static bool bio_attempt_front_merge(struct request_queue *q,
 
 	drive_stat_acct(req, 0);
 	elv_bio_merged(q, req, bio);
+#if defined (CONFIG_BD_CACHE_ENABLED)
+	if (test_bit(BIO_DIRECT, (unsigned long *)&bio->bi_flags)) {
+		/*printk(KERN_DEBUG "%s: ELEVATOR_FRONT_MERGE, BIO_DIRECT->__REQ_DIRECTIO\n", __FUNCTION__);*/
+		set_bit(__REQ_DIRECTIO, (unsigned long *)&req->cmd_flags);
+	}
+#endif
 	return true;
 }
 
@@ -1277,6 +1292,11 @@ get_rq:
 		req->cpu = blk_cpu_to_group(get_cpu());
 		put_cpu();
 	}
+
+#if defined (CONFIG_BD_CACHE_ENABLED)
+        if (test_bit(BIO_DIRECT, (unsigned long *)&bio->bi_flags))
+                set_bit(__REQ_DIRECTIO, (unsigned long *)&req->cmd_flags);
+#endif
 
 	plug = current->plug;
 	if (plug) {
