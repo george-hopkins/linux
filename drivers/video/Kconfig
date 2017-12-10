@@ -259,6 +259,15 @@ config FB_TILEBLITTING
 comment "Frame buffer hardware drivers"
 	depends on FB
 
+config FB_SDP
+        tristate "Samsung DTV Frame Buffer Driver"
+        depends on FB && ARCH_CCEP
+        select FB_CFB_FILLRECT
+        select FB_CFB_COPYAREA
+        select FB_CFB_IMAGEBLIT
+    --help---
+    Samsung DTV Frame Buffer
+
 config FB_CIRRUS
 	tristate "Cirrus Logic support"
 	depends on FB && (ZORRO || PCI)

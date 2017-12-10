@@ -183,6 +183,20 @@ char* fb_get_buffer_offset(struct fb_info *info, struct fb_pixmap *buf, u32 size
 	return addr;
 }
 
+struct fb_info* sdp_get_fb_info(int i)
+{
+	struct fb_info *fi = registered_fb[i];
+	return fi;
+}
+int sdp_set_fb_info(const struct fb_info*new_info,int i)
+{
+	struct fb_info *fi = registered_fb[i];
+	fi->ump_secure_id = new_info->ump_secure_id;	// currently changing only ump secure id;
+	return 1;
+}
+EXPORT_SYMBOL(sdp_get_fb_info);
+EXPORT_SYMBOL(sdp_set_fb_info);
+
 #ifdef CONFIG_LOGO
 
 static inline unsigned safe_shift(unsigned d, int n)
@@ -1167,6 +1181,18 @@ static long do_fb_ioctl(struct fb_info *info, unsigned int cmd,
 		info->flags &= ~FBINFO_MISC_USEREVENT;
 		console_unlock();
 		unlock_fb_info(info);
+		break;
+	case GET_UMP_SECURE_ID:			// X11 mali ump
+		printk("GET_UMP_SECURE_ID icotl recived\n");
+		if (!lock_fb_info(info))
+                        return -ENODEV;
+		console_lock();
+		long var = info->ump_secure_id;
+		printk(" UMP Secure ID %08x \n",info->ump_secure_id);
+		if (!ret && copy_to_user(argp, &var, sizeof(var)))
+                        ret = -EFAULT;
+		console_unlock();
+		unlock_fb_info(info);	
 		break;
 	default:
 		if (!lock_fb_info(info))
