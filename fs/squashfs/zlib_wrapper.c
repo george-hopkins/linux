@@ -110,13 +110,13 @@ static int zlib_uncompress(struct squashfs_sb_info *msblk, void **buffer,
 	} while (zlib_err == Z_OK);
 
 	if (zlib_err != Z_STREAM_END) {
-		ERROR("zlib_inflate error, data probably corrupt\n");
+		ERROR("zlib_inflate error, data probably corrupt : zlib_err != Z_STREAM_END \n");
 		goto release_mutex;
 	}
 
 	zlib_err = zlib_inflateEnd(stream);
 	if (zlib_err != Z_OK) {
-		ERROR("zlib_inflate error, data probably corrupt\n");
+		ERROR("zlib_inflate error, data probably corrupt: zlib_err != Z_OK\n");
 		goto release_mutex;
 	}
 

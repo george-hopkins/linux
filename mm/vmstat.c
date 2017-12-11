@@ -608,11 +608,18 @@ int fragmentation_index(struct zone *zone, unsigned int order)
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 
+#ifndef CONFIG_CMA_DEBUG
 static char * const migratetype_names[MIGRATE_TYPES] = {
+#else
+const char * const migratetype_names[MIGRATE_TYPES] = {
+#endif
 	"Unmovable",
 	"Reclaimable",
 	"Movable",
 	"Reserve",
+#ifdef CONFIG_MIGRATE_CMA
+	"CMA",
+#endif
 	"Isolate",
 };
 

@@ -33,6 +33,36 @@
 #include <linux/compat.h>
 #endif
 
+#if defined(CONFIG_EXT4_FS_TRUNCATE_RANGE) \
+	|| defined(CONFIG_EXT4_FS_SPLIT_FILE) \
+	|| defined(CONFIG_EXT4_FS_MERGE_FILE)
+#include <linux/fs.h>
+#include <linux/file.h>
+#include <linux/fdtable.h>
+#include <linux/rcupdate.h>
+#include <linux/pid_namespace.h>
+#include <linux/pvr_edit.h>
+
+#define GET_INODE_FROM_FILP(x) (x->f_path.dentry->d_inode->i_ino)
+#define GET_SUPERDEV_FROM_FILP(x) (x->f_path.dentry->d_inode->i_sb->s_dev)
+#endif
+
+/*
+ * Truncate range alias
+ */
+#ifdef CONFIG_EXT4_FS_TRUNCATE_RANGE
+#define EXT4_IOC_TRUNCATE_RANGE			FTRUNCATERANGE
+#define EXT4_IOC_TRUNCATE_ARRAY_RANGE	FTRUNCATE_ARRAY_RANGE
+#endif
+
+#ifdef CONFIG_EXT4_FS_SPLIT_FILE
+#define EXT4_IOC_SPLIT_FILE		FSPLIT
+#endif
+
+#ifdef CONFIG_EXT4_FS_MERGE_FILE
+#define EXT4_IOC_MERGE_FILE		FMERGE
+#endif
+
 /*
  * The fourth extended filesystem constants/structures
  */
@@ -519,6 +549,8 @@ struct ext4_new_group_data {
 #define EXT4_GET_BLOCKS_PUNCH_OUT_EXT		0x0020
 	/* Don't normalize allocation size (used for fallocate) */
 #define EXT4_GET_BLOCKS_NO_NORMALIZE		0x0040
+	/* Request will not result in inode size update (user for fallocate) */
+#define EXT4_GET_BLOCKS_KEEP_SIZE		0x0080
 
 /*
  * Flags used by ext4_free_blocks
@@ -527,6 +559,11 @@ struct ext4_new_group_data {
 #define EXT4_FREE_BLOCKS_FORGET		0x0002
 #define EXT4_FREE_BLOCKS_VALIDATED	0x0004
 #define EXT4_FREE_BLOCKS_NO_QUOT_UPDATE	0x0008
+
+/*
+ * Flags used by ext4_discard_partial_page_buffers
+ */
+#define EXT4_DISCARD_PARTIAL_PG_ZERO_UNMAPPED	0x0001
 
 /*
  * ioctl commands
@@ -642,6 +679,7 @@ struct move_extent {
 	__u64 len;		/* block length to be moved */
 	__u64 moved_len;	/* moved block length */
 };
+
 
 #define EXT4_EPOCH_BITS 2
 #define EXT4_EPOCH_MASK ((1 << EXT4_EPOCH_BITS) - 1)
@@ -1080,6 +1118,7 @@ struct ext4_super_block {
  * fourth extended-fs super-block data in memory
  */
 struct ext4_sb_info {
+	bool 	is_case_insensitive;	/* Check if Ext4 is case insensitive */
 	unsigned long s_desc_size;	/* Size of a group descriptor in bytes */
 	unsigned long s_inodes_per_block;/* Number of inodes per block */
 	unsigned long s_blocks_per_group;/* Number of blocks in a group */
@@ -1152,9 +1191,6 @@ struct ext4_sb_info {
 	unsigned long s_ext_blocks;
 	unsigned long s_ext_extents;
 #endif
-	/* ext4 extent cache stats */
-	unsigned long extent_cache_hits;
-	unsigned long extent_cache_misses;
 
 	/* for buddy allocator */
 	struct ext4_group_info ***s_group_info;
@@ -1736,8 +1772,14 @@ extern struct ext4_group_desc * ext4_get_group_desc(struct super_block * sb,
 						    ext4_group_t block_group,
 						    struct buffer_head ** bh);
 extern int ext4_should_retry_alloc(struct super_block *sb, int *retries);
-struct buffer_head *ext4_read_block_bitmap(struct super_block *sb,
-				      ext4_group_t block_group);
+
+extern struct buffer_head *ext4_read_block_bitmap_nowait(struct super_block *sb,
+						ext4_group_t block_group);
+extern int ext4_wait_block_bitmap(struct super_block *sb,
+				  ext4_group_t block_group,
+				  struct buffer_head *bh);
+extern struct buffer_head *ext4_read_block_bitmap(struct super_block *sb,
+						ext4_group_t block_group);
 extern unsigned ext4_init_block_bitmap(struct super_block *sb,
 				       struct buffer_head *bh,
 				       ext4_group_t group,
@@ -1777,6 +1819,7 @@ extern void ext4_check_inodes_bitmap(struct super_block *);
 extern void ext4_mark_bitmap_end(int start_bit, int end_bit, char *bitmap);
 extern int ext4_init_inode_table(struct super_block *sb,
 				 ext4_group_t group, int barrier);
+extern void ext4_end_bitmap_read(struct buffer_head *bh, int uptodate);
 
 /* mballoc.c */
 extern long ext4_mb_stats;
@@ -1831,6 +1874,12 @@ extern int ext4_block_truncate_page(handle_t *handle,
 		struct address_space *mapping, loff_t from);
 extern int ext4_block_zero_page_range(handle_t *handle,
 		struct address_space *mapping, loff_t from, loff_t length);
+extern int ext4_discard_partial_page_buffers(handle_t *handle,
+		struct address_space *mapping, loff_t from,
+		loff_t length, int flags);
+extern int ext4_discard_partial_page_buffers_no_lock(handle_t *handle,
+		struct inode *inode, struct page *page, loff_t from,
+		loff_t length, int flags);
 extern int ext4_page_mkwrite(struct vm_area_struct *vma, struct vm_fault *vmf);
 extern qsize_t *ext4_get_reserved_space(struct inode *inode);
 extern void ext4_da_update_reserve_space(struct inode *inode,
@@ -2161,6 +2210,9 @@ extern int ext4_ext_index_trans_blocks(struct inode *inode, int nrblocks,
 extern int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
 			       struct ext4_map_blocks *map, int flags);
 extern void ext4_ext_truncate(struct inode *);
+extern int ext4_ext_truncate_range(struct file *filp,
+		loff_t start, loff_t end);
+
 extern int ext4_ext_punch_hole(struct file *file, loff_t offset,
 				loff_t length);
 extern void ext4_ext_init(struct super_block *);
@@ -2173,10 +2225,14 @@ extern int ext4_map_blocks(handle_t *handle, struct inode *inode,
 			   struct ext4_map_blocks *map, int flags);
 extern int ext4_fiemap(struct inode *inode, struct fiemap_extent_info *fieinfo,
 			__u64 start, __u64 len);
+int ext4_cmp_offsets(const void *a, const void *b);
 /* move_extent.c */
 extern int ext4_move_extents(struct file *o_filp, struct file *d_filp,
 			     __u64 start_orig, __u64 start_donor,
 			     __u64 len, __u64 *moved_len);
+
+extern int ext4_split_file(struct file *o_filp, char *dest_file, __u64 offset);
+extern int ext4_merge_file(struct file *o_filp, char *dest_file);
 
 /* page-io.c */
 extern int __init ext4_init_pageio(void);
@@ -2230,6 +2286,44 @@ static inline void set_bitmap_uptodate(struct buffer_head *bh)
 					     EXT4_WQ_HASH_SZ])
 extern wait_queue_head_t ext4__ioend_wq[EXT4_WQ_HASH_SZ];
 extern struct mutex ext4__aio_mutex[EXT4_WQ_HASH_SZ];
+
+static inline __u32 ext4_do_div(void *a, __u32 b, int n)
+{
+	__u32   mod;
+
+	switch (n) {
+	case 4:
+		mod = *(__u32 *)a % b;
+		*(__u32 *)a = *(__u32 *)a / b;
+		return mod;
+	case 8:
+		mod = do_div(*(__u64 *)a, b);
+		return mod;
+	}
+
+	/* NOTREACHED */
+	return 0;
+}
+
+static inline __u32 ext4_do_mod(void *a, __u32 b, int n)
+{
+	switch (n) {
+	case 4:
+		return *(__u32 *)a % b;
+	case 8:
+		{
+		__u64   c = *(__u64 *)a;
+		return do_div(c, b);
+		}
+	}
+
+	/* NOTREACHED */
+	return 0;
+}
+
+#undef do_div
+#define do_div(a, b)    ext4_do_div(&(a), (b), sizeof(a))
+#define do_mod(a, b)    ext4_do_mod(&(a), (b), sizeof(a))
 
 #endif	/* __KERNEL__ */
 

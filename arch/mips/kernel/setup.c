@@ -390,7 +390,12 @@ static void __init bootmem_init(void)
 
 		/* Register lowmem ranges */
 		free_bootmem(PFN_PHYS(start), size << PAGE_SHIFT);
+
+#if defined(CONFIG_NVT_CHIP) || defined(CONFIG_MSTAR_CHIP)
+	//	memory_present(0, start, end);
+#else
 		memory_present(0, start, end);
+#endif
 	}
 
 	/*
@@ -402,6 +407,25 @@ static void __init bootmem_init(void)
 	 * Reserve initrd memory if needed.
 	 */
 	finalize_initrd();
+
+#if defined(CONFIG_NVT_CHIP) || defined(CONFIG_MSTAR_CHIP)
+	/* call memory present for all the identified memory banks */
+	for (i = 0; i < boot_mem_map.nr_map; i++) {
+		unsigned long start, end;
+
+		/*
+		 ** memory present only usable memory.
+		 **/
+		if (boot_mem_map.map[i].type != BOOT_MEM_RAM)
+			continue;
+
+		start = PFN_UP(boot_mem_map.map[i].addr);
+		end   = PFN_DOWN(boot_mem_map.map[i].addr
+				+ boot_mem_map.map[i].size);
+
+		memory_present(0, start, end);
+	}
+#endif
 }
 
 #endif	/* CONFIG_SGI_IP27 */
@@ -463,6 +487,10 @@ static void __init arch_mem_init(char **cmdline_p)
 	pr_info("Determined physical RAM map:\n");
 	print_memory_map();
 
+#ifdef CONFIG_NVT_CHIP
+	strlcpy(command_line, arcs_cmdline, COMMAND_LINE_SIZE);
+	strlcpy(boot_command_line, command_line, COMMAND_LINE_SIZE);
+#else
 #ifdef CONFIG_CMDLINE_BOOL
 #ifdef CONFIG_CMDLINE_OVERRIDE
 	strlcpy(boot_command_line, builtin_cmdline, COMMAND_LINE_SIZE);
@@ -477,6 +505,7 @@ static void __init arch_mem_init(char **cmdline_p)
 	strlcpy(boot_command_line, arcs_cmdline, COMMAND_LINE_SIZE);
 #endif
 	strlcpy(command_line, boot_command_line, COMMAND_LINE_SIZE);
+#endif
 
 	*cmdline_p = command_line;
 
@@ -550,6 +579,12 @@ static void __init resource_init(void)
 void __init setup_arch(char **cmdline_p)
 {
 	cpu_probe();
+
+#ifdef CONFIG_NVT_CHIP
+#ifdef CONFIG_CMDLINE_BOOL
+	strlcpy(arcs_cmdline, builtin_cmdline, sizeof(builtin_cmdline));
+#endif
+#endif
 	prom_init();
 
 #ifdef CONFIG_EARLY_PRINTK

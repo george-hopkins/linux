@@ -288,6 +288,208 @@ xfs_bump_ino_vers2(
 	/* Caller must log the inode */
 }
 
+#ifdef CONFIG_XFS_FS_SPLIT
+/*
+ * Split the file (move file blocks to new file which is created and inode ptr
+ * and other details are there in split_data, Start off from the split_data 
+ * is used to start moving blocks from the original file.
+ */
+int
+xfs_split_file(
+        xfs_mount_t     *mp,
+        xfs_inode_t     *ip,
+        xfs_split_data_t *split_data)
+{
+        xfs_trans_t     *tp;
+        int             error;
+        xfs_off_t       start;
+        xfs_off_t       end = 0;
+
+        split_data->cur = NULL;
+
+        /* *
+	 * Start points to start block in the original file,
+	 * End - taken temporarily to reach at the last position from where the blocks are to be moved
+	 * this is taken as '1 block + startoff' 
+	 * */
+        start = split_data->startoff;
+        end = start + ip->i_mount->m_sb.sb_blocksize;
+
+        xfs_ilock(ip, XFS_IOLOCK_EXCL);
+
+        tp = xfs_trans_alloc(mp, XFS_TRANS_TRUNCATE_FILE);
+        if ((error = xfs_trans_reserve(tp, 100, XFS_ITRUNCATE_LOG_RES(mp), 0,
+                                      XFS_TRANS_PERM_LOG_RES,
+                                      XFS_ITRUNCATE_LOG_COUNT))) {
+                xfs_trans_cancel(tp, 0);
+                xfs_iunlock(ip, XFS_IOLOCK_EXCL);
+                return error;
+        }
+        xfs_iunlock(ip, XFS_IOLOCK_EXCL);
+        /*
+	 * Follow the normal truncate locking protocol.  Since we
+	 * hold the inode in the transaction, we know that it's number
+	 * of references will stay constant.
+	 */
+
+        xfs_ilock(split_data->ip, XFS_IOLOCK_EXCL);
+        split_data->tp = xfs_trans_alloc(split_data->mp, XFS_TRANS_TRUNCATE_FILE);
+        if ((error = xfs_trans_reserve(split_data->tp, 100, XFS_ITRUNCATE_LOG_RES((xfs_mount_t*)split_data->mp), 0,
+                                      XFS_TRANS_PERM_LOG_RES,
+                                      XFS_ITRUNCATE_LOG_COUNT))) {
+                xfs_trans_cancel(split_data->tp, 0);
+		 xfs_trans_cancel(tp,0);
+                xfs_iunlock(split_data->ip, XFS_IOLOCK_EXCL);
+                return error;
+        }
+        xfs_iunlock(split_data->ip, XFS_IOLOCK_EXCL);
+
+        xfs_ilock(ip, XFS_ILOCK_EXCL);
+        xfs_trans_ijoin(tp, ip);
+	xfs_trans_log_inode(tp, ip, XFS_ILOG_ALL);
+	xfs_trans_set_sync(tp);
+
+        /* 
+	 * Follow the normal truncate locking protocol, for new file too.
+	 */
+
+        xfs_ilock(split_data->ip, XFS_ILOCK_EXCL);
+        xfs_trans_ijoin(split_data->tp, split_data->ip);
+        xfs_trans_log_inode(split_data->tp,split_data->ip,XFS_ILOG_ALL);
+	xfs_trans_set_sync((xfs_trans_t*)split_data->tp);
+
+        error = xfs_isplit(&tp, ip, start,end,
+                                     XFS_DATA_FORK,
+                                     ((ip->i_d.di_nlink != 0 ||
+                                       !(mp->m_flags & XFS_MOUNT_WSYNC))
+                                      ? 1 : 0),split_data);
+
+        if (error) {
+                xfs_trans_cancel(tp, XFS_TRANS_RELEASE_LOG_RES |
+                                 XFS_TRANS_ABORT);
+                xfs_trans_cancel(split_data->tp, XFS_TRANS_RELEASE_LOG_RES |
+                                 XFS_TRANS_ABORT);
+        } else {
+                xfs_trans_ichgtime(tp, ip, XFS_ICHGTIME_MOD | XFS_ICHGTIME_CHG);
+                error = xfs_trans_commit(tp, XFS_TRANS_RELEASE_LOG_RES);
+                xfs_trans_ichgtime(split_data->tp, split_data->ip, XFS_ICHGTIME_MOD | XFS_ICHGTIME_CHG);
+                error = xfs_trans_commit(split_data->tp, XFS_TRANS_RELEASE_LOG_RES);
+        }
+
+        xfs_iunlock(ip, XFS_ILOCK_EXCL);
+        xfs_iunlock(split_data->ip, XFS_ILOCK_EXCL);
+
+        return error;
+}
+
+/*
+ * Free the leaf blocks extents after the split operation
+ * is done on the file, this is done in a new transaction
+ */
+int xfs_free_leafblocks_after_split(xfs_mount_t     *mp,
+                                xfs_inode_t     *ip,
+                                xfs_split_data_t *split_data)
+{
+        xfs_trans_t     *tp; /* Transaction to free leaf blocks in split */
+        int             error;
+        xfs_bmap_free_t *flist;
+
+        if(!split_data->flist)
+                return -XFS_ERROR(EINVAL);
+
+        flist = (xfs_bmap_free_t*) split_data->flist;
+        if(0 == flist->xbf_count)
+                return -XFS_ERROR(EINVAL);
+
+        xfs_ilock(ip, XFS_IOLOCK_EXCL);
+
+        tp = xfs_trans_alloc(mp, XFS_TRANS_TRUNCATE_FILE);
+        if ((error = xfs_trans_reserve(tp, 0, XFS_ITRUNCATE_LOG_RES(mp), 0,
+                                      XFS_TRANS_PERM_LOG_RES,
+                                      XFS_ITRUNCATE_LOG_COUNT))) {
+                xfs_trans_cancel(tp, 0);
+                xfs_iunlock(ip, XFS_IOLOCK_EXCL);
+                return error;
+        }
+	xfs_iunlock(ip, XFS_IOLOCK_EXCL);
+
+        /*
+	 * Follow the normal truncate locking protocol.  Since we
+	 * hold the inode in the transaction, we know that it's number
+	 * of references will stay constant.
+	 */
+        xfs_ilock(ip, XFS_ILOCK_EXCL);
+	xfs_trans_ijoin(tp, ip);
+	xfs_trans_log_inode(tp, ip, XFS_ILOG_ALL);
+	xfs_trans_set_sync(tp);
+
+        error = xfs_free_after_split(&tp, ip, split_data);
+        if (error) {
+                xfs_trans_cancel(tp, XFS_TRANS_RELEASE_LOG_RES |
+                                 XFS_TRANS_ABORT);
+        } else {
+                xfs_trans_ichgtime(tp, ip, XFS_ICHGTIME_MOD | XFS_ICHGTIME_CHG);
+                error = xfs_trans_commit(tp, XFS_TRANS_RELEASE_LOG_RES);
+        }
+        xfs_iunlock(ip, XFS_ILOCK_EXCL);
+
+        return error;
+}
+#endif
+#ifdef CONFIG_XFS_FS_TRUNCATE_RANGE
+/* Truncates a given file( removes blocks from the file)
+ * start - start offset from where blocks are to be removed
+ * end - end offset till where the blocks are to be removed
+ */
+int
+xfs_truncate_range_file(
+        xfs_mount_t     *mp,
+        xfs_inode_t     *ip,
+        xfs_off_t       start,
+        xfs_off_t       end)
+{
+        xfs_trans_t     *tp;
+        int             error;
+
+        xfs_ilock(ip, XFS_IOLOCK_EXCL);
+
+        tp = xfs_trans_alloc(mp, XFS_TRANS_TRUNCATE_FILE);
+        if ((error = xfs_trans_reserve(tp, 100, XFS_ITRUNCATE_LOG_RES(mp), 0,
+                                      XFS_TRANS_PERM_LOG_RES,
+                                      XFS_ITRUNCATE_LOG_COUNT))) {
+                xfs_trans_cancel(tp, 0);
+                xfs_iunlock(ip, XFS_IOLOCK_EXCL);
+                return error;
+        }
+	xfs_iunlock(ip, XFS_IOLOCK_EXCL);
+
+        /*
+	 * Follow the normal truncate locking protocol.  Since we
+	 * hold the inode in the transaction, we know that it's number
+	 * of references will stay constant.
+	 */
+        xfs_ilock(ip, XFS_ILOCK_EXCL);
+        xfs_trans_ijoin(tp, ip);
+        xfs_trans_log_inode(tp,ip,XFS_ILOG_ALL);
+
+        error = xfs_itruncate_range(&tp, ip, start,end,
+                                     XFS_DATA_FORK,
+                                     ((ip->i_d.di_nlink != 0 ||
+                                       !(mp->m_flags & XFS_MOUNT_WSYNC))
+                                      ? 1 : 0));
+        if (error) {
+                xfs_trans_cancel(tp, XFS_TRANS_RELEASE_LOG_RES |
+                                 XFS_TRANS_ABORT);
+        } else {
+                xfs_trans_ichgtime(tp, ip, XFS_ICHGTIME_MOD | XFS_ICHGTIME_CHG);
+                error = xfs_trans_commit(tp, XFS_TRANS_RELEASE_LOG_RES);
+        }
+        xfs_iunlock(ip, XFS_ILOCK_EXCL);
+
+        return error;
+}
+#endif
+
 /*
  * Increment the link count on an inode & log the change.
  */

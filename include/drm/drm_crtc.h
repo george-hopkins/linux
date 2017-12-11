@@ -32,9 +32,12 @@
 
 #include <linux/fb.h>
 
+#include <drm/drm_fourcc.h>
+
 struct drm_device;
 struct drm_mode_set;
 struct drm_framebuffer;
+struct drm_object_properties;
 
 
 #define DRM_MODE_OBJECT_CRTC 0xcccccccc
@@ -44,10 +47,18 @@ struct drm_framebuffer;
 #define DRM_MODE_OBJECT_PROPERTY 0xb0b0b0b0
 #define DRM_MODE_OBJECT_FB 0xfbfbfbfb
 #define DRM_MODE_OBJECT_BLOB 0xbbbbbbbb
+#define DRM_MODE_OBJECT_PLANE 0xeeeeeeee
 
 struct drm_mode_object {
 	uint32_t id;
 	uint32_t type;
+	struct drm_object_properties *properties;
+};
+#define DRM_OBJECT_MAX_PROPERTY 24
+struct drm_object_properties {
+	int count;
+	uint32_t ids[DRM_OBJECT_MAX_PROPERTY];
+	uint64_t values[DRM_OBJECT_MAX_PROPERTY];
 };
 
 /*
@@ -237,12 +248,15 @@ struct drm_framebuffer {
 	struct drm_mode_object base;
 	const struct drm_framebuffer_funcs *funcs;
 	unsigned int pitch;
+	unsigned int pitches[4];
+	unsigned int offsets[4];
 	unsigned int width;
 	unsigned int height;
 	/* depth can be 15 or 16 */
 	unsigned int depth;
 	int bits_per_pixel;
 	int flags;
+	uint32_t pixel_format; /* fourcc format */
 	struct list_head filp_head;
 	/* if you are using the helper */
 	void *helper_private;
@@ -276,6 +290,7 @@ struct drm_crtc;
 struct drm_connector;
 struct drm_encoder;
 struct drm_pending_vblank_event;
+struct drm_plane;
 
 /**
  * drm_crtc_funcs - control CRTCs for a given device
@@ -525,6 +540,70 @@ struct drm_connector {
 };
 
 /**
+ * drm_plane - central DRM plane control structure
+ * @dev: DRM device this plane belongs to
+ * @head: for list management
+ * @base: base mode object
+ * @possible_crtcs: pipes this plane can be bound to
+ * @format_types: array of formats supported by this plane
+ * @format_count: number of formats supported
+ * @crtc: currently bound CRTC
+ * @fb: currently bound fb
+ * @gamma_size: size of gamma table
+ * @gamma_store: gamma correction table
+ * @enabled: enabled flag
+ * @funcs: helper functions
+ * @helper_private: storage for drver layer
+ * @properties: property tracking for this plane
+ */
+struct drm_plane {
+	struct drm_device *dev;
+	struct list_head head;
+
+	struct drm_mode_object base;
+
+	uint32_t possible_crtcs;
+	uint32_t *format_types;
+	uint32_t format_count;
+
+	struct drm_crtc *crtc;
+	struct drm_framebuffer *fb;
+
+	/* CRTC gamma size for reporting to userspace */
+	uint32_t gamma_size;
+	uint16_t *gamma_store;
+
+	bool enabled;
+
+	const struct drm_plane_funcs *funcs;
+	void *helper_private;
+
+	struct drm_object_properties properties;
+};
+
+
+/**
+ * drm_plane_funcs - driver plane control functions
+ * @update_plane: update the plane configuration
+ * @disable_plane: shut down the plane
+ * @destroy: clean up plane resources
+ * @set_property: called when a property is changed
+ */
+struct drm_plane_funcs {
+	int (*update_plane)(struct drm_plane *plane,
+			    struct drm_crtc *crtc, struct drm_framebuffer *fb,
+			    int crtc_x, int crtc_y,
+			    unsigned int crtc_w, unsigned int crtc_h,
+			    uint32_t src_x, uint32_t src_y,
+			    uint32_t src_w, uint32_t src_h);
+	int (*disable_plane)(struct drm_plane *plane);
+	void (*destroy)(struct drm_plane *plane);
+
+	int (*set_property)(struct drm_plane *plane,
+			    struct drm_property *property, uint64_t val);
+};
+
+/**
  * struct drm_mode_set
  *
  * Represents a single crtc the connectors that it drives with what mode
@@ -550,7 +629,7 @@ struct drm_mode_set {
  * struct drm_mode_config_funcs - configure CRTCs for a given screen layout
  */
 struct drm_mode_config_funcs {
-	struct drm_framebuffer *(*fb_create)(struct drm_device *dev, struct drm_file *file_priv, struct drm_mode_fb_cmd *mode_cmd);
+	struct drm_framebuffer *(*fb_create)(struct drm_device *dev, struct drm_file *file_priv, struct drm_mode_fb_cmd2 *mode_cmd);
 	void (*output_poll_changed)(struct drm_device *dev);
 };
 
@@ -648,6 +727,13 @@ extern void drm_encoder_init(struct drm_device *dev,
 			     struct drm_encoder *encoder,
 			     const struct drm_encoder_funcs *funcs,
 			     int encoder_type);
+extern int drm_plane_init(struct drm_device *dev,
+			  struct drm_plane *plane,
+			  unsigned long possible_crtcs,
+			  const struct drm_plane_funcs *funcs,
+			  const uint32_t *formats, uint32_t format_count,
+			  bool priv);
+extern void drm_plane_cleanup(struct drm_plane *plane);
 
 extern void drm_encoder_cleanup(struct drm_encoder *encoder);
 
@@ -753,6 +839,10 @@ extern int drm_mode_cursor_ioctl(struct drm_device *dev,
 				void *data, struct drm_file *file_priv);
 extern int drm_mode_addfb(struct drm_device *dev,
 			  void *data, struct drm_file *file_priv);
+extern int drm_mode_addfb2(struct drm_device *dev,
+			   void *data, struct drm_file *file_priv);
+			  
+extern uint32_t drm_mode_legacy_fb_format(uint32_t bpp, uint32_t depth);
 extern int drm_mode_rmfb(struct drm_device *dev,
 			 void *data, struct drm_file *file_priv);
 extern int drm_mode_getfb(struct drm_device *dev,
@@ -813,4 +903,15 @@ extern int drm_mode_mmap_dumb_ioctl(struct drm_device *dev,
 				    void *data, struct drm_file *file_priv);
 extern int drm_mode_destroy_dumb_ioctl(struct drm_device *dev,
 				      void *data, struct drm_file *file_priv);
+extern int drm_mode_obj_get_properties_ioctl(struct drm_device *dev, void *data,
+					     struct drm_file *file_priv);
+extern int drm_mode_obj_set_property_ioctl(struct drm_device *dev, void *data,
+					   struct drm_file *file_priv);
+
+extern void drm_fb_get_bpp_depth(uint32_t format, unsigned int *depth,
+				 int *bpp);
+extern int drm_format_num_planes(uint32_t format);
+extern int drm_format_plane_cpp(uint32_t format, int plane);
+extern int drm_format_horz_chroma_subsampling(uint32_t format);
+extern int drm_format_vert_chroma_subsampling(uint32_t format);
 #endif /* __DRM_CRTC_H__ */

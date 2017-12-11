@@ -72,7 +72,7 @@ endif
 
 $(obj)/uImage: STARTADDR=$(LOADADDR)
 
-$(obj)/uImage:	$(obj)/zImage FORCE
+$(obj)/uImage:	$(obj)/Image FORCE
 	$(call if_changed,uimage)
 	@echo '  Image $@ is ready'
 

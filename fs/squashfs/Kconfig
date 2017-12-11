@@ -26,6 +26,54 @@ config SQUASHFS
 
 	  If unsure, say N.
 
+config GZMANAGER_DECOMPRESS
+	bool "gzManager decompressor support"
+	depends on SQUASHFS
+	select GZMANAGER
+	select SQUASHFS_BLOCK_SIZE_1K_TO_4K
+    default n
+	help
+	  The another option for using the gunzip Manager for the Squashfs 
+	  This is the better option for using the HW and the SW decompressor simultaneously.
+	  Deselect this option to get the async option for the decompression.
+choice
+    prompt "Gunzip Manager decompress"
+	depends on GZMANAGER_DECOMPRESS
+    default GZMANAGER_DIRECT_CALL
+    help
+	  The option for using the gunzip Manager for the Squashfs 
+	  This is the better option for using the HW and the SW decompressor simultaneously.
+	  Select the desired decompression method for gzManager.
+ 
+	  If you are not absolutely sure what you are doing, leave this
+	  option alone!
+ 
+    config GZMANAGER_DIRECT_CALL
+        bool "gzManager direct call support"
+    config GZMANAGER_ASYNC_CALL
+        bool "gzManager async call support"
+endchoice
+
+config SQUASHFS_INCL_BIO
+
+	bool "squashfs uses BIO instead of bufferheads"
+	depends on SQUASHFS
+	select CONFIG_SQUASHFS_BLOCK_SIZE_1K_TO_4K
+	select GZMANAGER_DECOMPRESS
+	default n
+	help
+	  Saying Y here allows you to use bio instead of bufferheads.
+
+	  If unsure, say N.
+
+config SQUASHFS_READPAGES_ENABLE
+	bool "Enable Readpages for Squashfs"
+	depends on SQUASHFS
+	default n
+	help
+	  Saying Y here enables readpages functionality.
+	  If unsure, say N.
+
 config SQUASHFS_XATTR
 	bool "Squashfs XATTR support"
 	depends on SQUASHFS
@@ -87,3 +135,10 @@ config SQUASHFS_FRAGMENT_CACHE_SIZE
 
 	  Note there must be at least one cached fragment.  Anything
 	  much more than three will probably not make much difference.
+
+config SQUASHFS_GZIP_LINEAR_MEM
+	bool "contiguous Memory for gziped squashfs File system"
+	depends on GZMANAGER_DECOMPRESS
+	default y
+	help
+	    contiguous Memory for gziped squashfs File system.

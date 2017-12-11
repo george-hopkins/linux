@@ -81,6 +81,14 @@ void *squashfs_decompressor_init(struct super_block *sb, unsigned short flags)
 {
 	struct squashfs_sb_info *msblk = sb->s_fs_info;
 	void *strm, *buffer = NULL;
+#ifdef CONFIG_GZMANAGER_DECOMPRESS
+#ifdef CONFIG_SQUASHFS_INCL_BIO
+    char ** ibuffer = NULL;
+    char * page_addr = NULL;
+#else
+	char *ibuff = NULL;
+#endif
+#endif
 	int length = 0;
 
 	/*
@@ -91,9 +99,33 @@ void *squashfs_decompressor_init(struct super_block *sb, unsigned short flags)
 		if (buffer == NULL)
 			return ERR_PTR(-ENOMEM);
 
+#ifdef CONFIG_GZMANAGER_DECOMPRESS
+#ifdef CONFIG_SQUASHFS_INCL_BIO
+	ibuffer = kcalloc(1, sizeof(void *), GFP_KERNEL);
+    page_addr=  (char *)alloc_pages_exact(PAGE_CACHE_SIZE , GFP_KERNEL);
+	if (ibuffer == NULL || !page_addr)
+		return ERR_PTR(-ENOMEM);
+    ibuffer[0] = (void *)virt_to_page(page_addr);
+    length = squashfs_read_data(sb, &buffer, (void **)ibuffer,
+        sizeof(struct squashfs_super_block), 0, NULL,
+        PAGE_CACHE_SIZE, 1);
+#else
+		ibuff = kmalloc(PAGE_CACHE_SIZE , GFP_KERNEL);
+		if (ibuff == NULL){
+			if(buffer)
+				kfree(buffer);
+			return ERR_PTR(-ENOMEM);
+		}
+
+		length = squashfs_read_data(sb, &buffer, ibuff,
+			sizeof(struct squashfs_super_block), 0, NULL,
+			PAGE_CACHE_SIZE, 1);
+#endif // BIO
+#else
 		length = squashfs_read_data(sb, &buffer,
 			sizeof(struct squashfs_super_block), 0, NULL,
 			PAGE_CACHE_SIZE, 1);
+#endif
 
 		if (length < 0) {
 			strm = ERR_PTR(length);
@@ -105,6 +137,19 @@ void *squashfs_decompressor_init(struct super_block *sb, unsigned short flags)
 
 finished:
 	kfree(buffer);
+#ifdef CONFIG_GZMANAGER_DECOMPRESS
+	if (SQUASHFS_COMP_OPTS(flags)) {
+#ifdef CONFIG_SQUASHFS_INCL_BIO
+        if (page_addr)
+            free_pages_exact((void *)page_addr, PAGE_CACHE_SIZE);
+        if (ibuffer)
+            kfree(ibuffer);
+#else
+		if(ibuff)
+			kfree(ibuff);
+#endif
+	}
+#endif
 
 	return strm;
 }

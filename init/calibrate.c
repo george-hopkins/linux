@@ -248,6 +248,11 @@ void __cpuinit calibrate_delay(void)
 	unsigned long lpj;
 	static bool printed;
 
+#if defined(CONFIG_LPJ_MANUAL_SETTING)
+    printk(KERN_ALERT "[VDLP] preset_lpj manual set to %lu\n", (unsigned long)CONFIG_LPJ_VALUE);
+    preset_lpj = (unsigned long)CONFIG_LPJ_VALUE;
+#endif
+
 	if (preset_lpj) {
 		lpj = preset_lpj;
 		if (!printed)

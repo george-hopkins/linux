@@ -254,6 +254,9 @@ static void nfsd_last_thread(struct svc_serv *serv)
 {
 	/* When last nfsd thread exits we need to do some clean-up */
 	nfsd_serv = NULL;
+	if (nfs_umountd_workqueue)
+		flush_workqueue(nfs_umountd_workqueue);
+
 	nfsd_shutdown();
 
 	printk(KERN_WARNING "nfsd: last server has exited, flushing export "

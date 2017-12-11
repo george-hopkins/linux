@@ -29,6 +29,8 @@
 #include "udf_i.h"
 #include "udf_sb.h"
 
+void *_sb_bread(struct super_block *sb, int lbn);
+
 struct buffer_head *udf_tgetblk(struct super_block *sb, int block)
 {
 	if (UDF_QUERY_FLAG(sb, UDF_FLAG_VARCONV))
@@ -40,9 +42,9 @@ struct buffer_head *udf_tgetblk(struct super_block *sb, int block)
 struct buffer_head *udf_tread(struct super_block *sb, int block)
 {
 	if (UDF_QUERY_FLAG(sb, UDF_FLAG_VARCONV))
-		return sb_bread(sb, udf_fixed_to_variable(block));
+		return _sb_bread(sb, udf_fixed_to_variable(block));
 	else
-		return sb_bread(sb, block);
+		return _sb_bread(sb, block);
 }
 
 struct genericFormat *udf_add_extendedattr(struct inode *inode, uint32_t size,
@@ -204,6 +206,7 @@ struct buffer_head *udf_read_tagged(struct super_block *sb, uint32_t block,
 {
 	struct tag *tag_p;
 	struct buffer_head *bh = NULL;
+	u8 checksum;
 
 	/* Read the block */
 	if (block == 0xFFFFFFFF)
@@ -211,7 +214,7 @@ struct buffer_head *udf_read_tagged(struct super_block *sb, uint32_t block,
 
 	bh = udf_tread(sb, block);
 	if (!bh) {
-		udf_debug("block=%d, location=%d: read failed\n",
+		printk(KERN_ERR "block=%d, location=%d: read failed\n",
 			  block, location);
 		return NULL;
 	}
@@ -221,21 +224,22 @@ struct buffer_head *udf_read_tagged(struct super_block *sb, uint32_t block,
 	*ident = le16_to_cpu(tag_p->tagIdent);
 
 	if (location != le32_to_cpu(tag_p->tagLocation)) {
-		udf_debug("location mismatch block %u, tag %u != %u\n",
+		printk(KERN_ERR "location mismatch block %u, tag %u != %u\n",
 			  block, le32_to_cpu(tag_p->tagLocation), location);
 		goto error_out;
 	}
 
 	/* Verify the tag checksum */
-	if (udf_tag_checksum(tag_p) != tag_p->tagChecksum) {
-		printk(KERN_ERR "udf: tag checksum failed block %d\n", block);
+	checksum = udf_tag_checksum(tag_p);
+	if (checksum != tag_p->tagChecksum) {
+		printk(KERN_ERR "udf: tag checksum failed block %d, checksum %02x != %02x\n", block, checksum, tag_p->tagChecksum);
 		goto error_out;
 	}
 
 	/* Verify the tag version */
 	if (tag_p->descVersion != cpu_to_le16(0x0002U) &&
 	    tag_p->descVersion != cpu_to_le16(0x0003U)) {
-		udf_debug("tag version 0x%04x != 0x0002 || 0x0003 block %d\n",
+		printk(KERN_ERR "tag version 0x%04x != 0x0002 || 0x0003 block %d\n",
 			  le16_to_cpu(tag_p->descVersion), block);
 		goto error_out;
 	}
@@ -247,11 +251,11 @@ struct buffer_head *udf_read_tagged(struct super_block *sb, uint32_t block,
 					le16_to_cpu(tag_p->descCRCLength)))
 		return bh;
 
-	udf_debug("Crc failure block %d: crc = %d, crclen = %d\n", block,
+	printk(KERN_ERR "Crc failure block %d: crc = %d, crclen = %d\n", block,
 	    le16_to_cpu(tag_p->descCRC), le16_to_cpu(tag_p->descCRCLength));
 
 error_out:
-	brelse(bh);
+	udf_release_data(bh);
 	return NULL;
 }
 

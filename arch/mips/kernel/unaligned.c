@@ -104,6 +104,31 @@ static u32 unaligned_action;
 #endif
 extern void show_registers(struct pt_regs *regs);
 
+/* VDLinux 3.x, based VDLP.4.2.1.x Add patch No.21,
+   check emulate load store insn patch, SP Team 2010-02-08 */
+#if defined(CONFIG_CHECK_USERMODE_ADE_EMULATE)
+#define check_emulate_load_store_insn(opcode) \
+	if (user_mode(regs)) {  \
+		printk(KERN_ALERT"##### Unaligned access : Called  %s(), %d line, forced send SIGBUS ...\n", \
+				__func__, __LINE__); \
+		printk(KERN_ALERT"##### insn.i_format.opcode : %s \n",(opcode)); \
+		goto sigbus;    \
+	}
+#else
+#define check_emulate_load_store_insn(opcode) \
+	if (user_mode(regs)) {  \
+		printk(KERN_ALERT"##### Unaligned access : Called %s(), %d line, check epc and opcode ...\n", \
+				__func__, __LINE__); \
+		printk(KERN_ALERT"##### insn.i_format.opcode %s, badvaddr : 0x%08lx\n", \
+				(opcode), \
+				regs->cp0_badvaddr); \
+		printk(KERN_ALERT"(epc == %08lx, sp == %08lx ra == %08lx)\n", \
+				(unsigned long) regs->cp0_epc,   \
+				(unsigned long) regs->regs[29],  \
+				(unsigned long) regs->regs[31]); \
+	}
+#endif
+
 static void emulate_load_store_insn(struct pt_regs *regs,
 	void __user *addr, unsigned int __user *pc)
 {
@@ -156,6 +181,7 @@ static void emulate_load_store_insn(struct pt_regs *regs,
 		if (!access_ok(VERIFY_READ, addr, 2))
 			goto sigbus;
 
+		check_emulate_load_store_insn("lh_op");
 		__asm__ __volatile__ (".set\tnoat\n"
 #ifdef __BIG_ENDIAN
 			"1:\tlb\t%0, 0(%2)\n"
@@ -189,6 +215,7 @@ static void emulate_load_store_insn(struct pt_regs *regs,
 		if (!access_ok(VERIFY_READ, addr, 4))
 			goto sigbus;
 
+		check_emulate_load_store_insn("lw_op");
 		__asm__ __volatile__ (
 #ifdef __BIG_ENDIAN
 			"1:\tlwl\t%0, (%2)\n"
@@ -219,6 +246,7 @@ static void emulate_load_store_insn(struct pt_regs *regs,
 		if (!access_ok(VERIFY_READ, addr, 2))
 			goto sigbus;
 
+		check_emulate_load_store_insn("lhu_op");
 		__asm__ __volatile__ (
 			".set\tnoat\n"
 #ifdef __BIG_ENDIAN
@@ -339,6 +367,7 @@ static void emulate_load_store_insn(struct pt_regs *regs,
 		if (!access_ok(VERIFY_WRITE, addr, 2))
 			goto sigbus;
 
+		check_emulate_load_store_insn("sh_op");
 		value = regs->regs[insn.i_format.rt];
 		__asm__ __volatile__ (
 #ifdef __BIG_ENDIAN
@@ -376,6 +405,7 @@ static void emulate_load_store_insn(struct pt_regs *regs,
 		if (!access_ok(VERIFY_WRITE, addr, 4))
 			goto sigbus;
 
+		check_emulate_load_store_insn("sw_op");
 		value = regs->regs[insn.i_format.rt];
 		__asm__ __volatile__ (
 #ifdef __BIG_ENDIAN
@@ -496,18 +526,42 @@ fault:
 		return;
 
 	die_if_kernel("Unhandled kernel unaligned access", regs);
+
+#ifdef CONFIG_SHOW_FAULT_TRACE_INFO
+	{
+		printk(KERN_ALERT "Unaligned access : sending SIGSEGV to %s, PID:%d\n", current->comm, current->pid);
+		show_info(current, regs);
+	}
+#endif
+
 	force_sig(SIGSEGV, current);
 
 	return;
 
 sigbus:
 	die_if_kernel("Unhandled kernel unaligned access", regs);
+
+#ifdef CONFIG_SHOW_FAULT_TRACE_INFO
+	{
+		printk(KERN_ALERT "Unaligned access : sending SIGBUS to %s, PID:%d\n", current->comm, current->pid);
+		show_info(current, regs);
+	}
+#endif
+
 	force_sig(SIGBUS, current);
 
 	return;
 
 sigill:
 	die_if_kernel("Unhandled kernel unaligned access or invalid instruction", regs);
+
+#ifdef CONFIG_SHOW_FAULT_TRACE_INFO
+	{
+		printk(KERN_ALERT "Unaligned access : sending SIGILL to %s, PID:%d\n", current->comm, current->pid);
+		show_info(current, regs);
+	}
+#endif
+
 	force_sig(SIGILL, current);
 }
 
@@ -547,6 +601,15 @@ asmlinkage void do_ade(struct pt_regs *regs)
 
 sigbus:
 	die_if_kernel("Kernel unaligned instruction access", regs);
+
+#ifdef CONFIG_SHOW_FAULT_TRACE_INFO
+	{
+		printk(KERN_ALERT "Unaligned instruction access : sending SIGBUS to %s, PID:%d\n",
+				current->comm, current->pid);
+		show_info(current, regs);
+	}
+#endif
+
 	force_sig(SIGBUS, current);
 
 	/*

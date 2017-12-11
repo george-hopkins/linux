@@ -1123,10 +1123,12 @@ static void autoconfig_16550a(struct uart_8250_port *up)
 	 * We distinguish between 16550A and U6 16550A by counting
 	 * how many bytes are in the FIFO.
 	 */
+#ifndef CONFIG_NVT_CHIP
 	if (up->port.type == PORT_16550A && size_fifo(up) == 64) {
 		up->port.type = PORT_U6_16550A;
 		up->capabilities |= UART_CAP_AFE;
 	}
+#endif
 }
 
 /*

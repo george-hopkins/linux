@@ -1,6 +1,21 @@
 #
 # Makefile for the kernel serial device drivers.
 #
+ifeq ($(CONFIG_MSTAR_CHIP),y)
+
+ifeq ($(CONFIG_MSTAR_AMBER3),y)
+obj-$(CONFIG_SERIAL_8250) += 8250_amber3.o
+endif
+ifeq ($(CONFIG_MSTAR_EDISON),y)
+obj-$(CONFIG_SERIAL_8250) += 8250_edison.o
+endif
+ifeq ($(CONFIG_MSTAR_EMERALD),y)
+obj-$(CONFIG_SERIAL_8250) += 8250_emerald.o
+endif
+
+else
+obj-$(CONFIG_SERIAL_8250) += 8250.o
+endif
 
 obj-$(CONFIG_SERIAL_CORE) += serial_core.o
 obj-$(CONFIG_SERIAL_21285) += 21285.o
@@ -14,7 +29,6 @@ obj-$(CONFIG_SERIAL_SUNZILOG) += sunzilog.o
 obj-$(CONFIG_SERIAL_SUNSU) += sunsu.o
 obj-$(CONFIG_SERIAL_SUNSAB) += sunsab.o
 
-obj-$(CONFIG_SERIAL_8250) += 8250.o
 obj-$(CONFIG_SERIAL_8250_PNP) += 8250_pnp.o
 obj-$(CONFIG_SERIAL_8250_GSC) += 8250_gsc.o
 obj-$(CONFIG_SERIAL_8250_PCI) += 8250_pci.o

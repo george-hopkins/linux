@@ -189,7 +189,7 @@ config COMPACTION
 config MIGRATION
 	bool "Page migration"
 	def_bool y
-	depends on NUMA || ARCH_ENABLE_MEMORY_HOTREMOVE || COMPACTION
+	depends on NUMA || ARCH_ENABLE_MEMORY_HOTREMOVE || COMPACTION || CMA
 	help
 	  Allows the migration of the physical location of pages of processes
 	  while the virtual addresses are not changed. This is useful in
@@ -370,3 +370,66 @@ config CLEANCACHE
 	  in a negligible performance hit.
 
 	  If unsure, say Y to enable cleancache
+
+config CMA
+	bool "Contiguous Memory Allocator"
+	select MIGRATION
+	select GENERIC_ALLOCATOR
+	depends on !NO_BOOTMEM
+	help
+	  This enables the Contiguous Memory Allocator which allows drivers
+	  to allocate big physically-contiguous blocks of memory for use with
+	  hardware components that do not support I/O map nor scatter-gather.
+
+	  For more information see <include/linux/cma.h>.  If unsure, say "n".
+
+config MIGRATE_CMA
+	bool "Use MIGRATE_CMA migratetype"
+	depends on CMA
+	default y
+	help
+	  This enables the use the MIGRATE_CMA migrate type in the CMA.
+	  MIGRATE_CMA lets CMA work on almost arbitrary memory range and
+	  not only inside ZONE_MOVABLE.
+
+	  This option can also be selected by code that uses MIGRATE_CMA
+	  even if CMA is not present.
+
+	  If unsure, say "y".
+
+config HDMA
+	bool "Hardware Dedicated Memory Allocator"
+	depends on CMA
+	default y
+	help
+	  This enables Hardware Dedicated Memory Allocator which allows to
+	  allocate physically-contiguous memory blocks. Actualy this is
+	  wrapper for speciall CMA regions.
+
+config CMA_DEBUG
+	bool "CMA debug messages (DEVELOPEMENT)"
+	depends on CMA
+	help
+	  Turns on debug messages in CMA.  This produces KERN_DEBUG
+	  messages for every CMA call as well as various messages while
+	  processing calls such as cma_alloc().  This option does not
+	  affect warning and error messages.
+
+	  This is mostly used during development.  If unsure, say "n".
+
+config ALLOC_CMA_FIRST
+	bool "Allocate MOVABLE pages from MIGRATE_CMA migrate type first"
+	depends on CMA
+	default y
+	help
+	  This enables attempt to get free pages from buddy allocator from
+	  MIGRATE_CMA migrate region if MIGRATE_MOVABLE allocation is requested.
+	  This will avoid OOM killer in case there are free pages available only
+	  in MIGRATE_CMA region (all other regions are exhausted).
+
+config PREVENT_ALLOC_BUFFER_IN_CMA
+	bool "Prevent to use CMA region for allocating buffer"
+	depends on CMA
+	default y
+	help
+	  This should be enabled to prevent to use CMA region for allocating buffer memory

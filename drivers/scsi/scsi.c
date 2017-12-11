@@ -348,8 +348,15 @@ void scsi_put_command(struct scsi_cmnd *cmd)
 
 	/* serious error if the command hasn't come from a device list */
 	spin_lock_irqsave(&cmd->device->list_lock, flags);
+#ifdef CONFIG_NVT_CHIP
+	if(likely(!list_empty(&cmd->list)))
+	{
+#endif
 	BUG_ON(list_empty(&cmd->list));
 	list_del_init(&cmd->list);
+#ifdef CONFIG_NVT_CHIP
+	}
+#endif
 	spin_unlock_irqrestore(&cmd->device->list_lock, flags);
 
 	__scsi_put_command(cmd->device->host, cmd, &sdev->sdev_gendev);

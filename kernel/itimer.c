@@ -194,6 +194,10 @@ int do_setitimer(int which, struct itimerval *value, struct itimerval *ovalue)
 	struct hrtimer *timer;
 	ktime_t expires;
 
+#ifdef CONFIG_ARCH_SDP1202
+                printk(KERN_ALERT "##### do_setitimer  %s(%d) \n", current->comm, current->pid);
+#endif
+
 	/*
 	 * Validate the timevals in value.
 	 */

@@ -196,6 +196,18 @@ config USB_NET_CDC_EEM
 	  IEEE 802 "local assignment" bit is set in the address, a "usbX"
 	  name is used instead.
 
+config SAMSUNG_HOST_DUAL_EEM_SUPPORT
+	bool "Samsung Dual CDC-EEM support"
+	depends on USB_NET_CDC_EEM
+	default y
+
+
+config SAMSUNG_BOTTOM_HALF_ENHANCMENT
+	bool "Samsung Bottom Half modification for Dual CDC-EEM"
+	depends on SAMSUNG_HOST_DUAL_EEM_SUPPORT
+	default y
+
+
 config USB_NET_CDC_NCM
 	tristate "CDC NCM support"
 	depends on USB_USBNET

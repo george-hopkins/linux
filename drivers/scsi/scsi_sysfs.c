@@ -499,6 +499,11 @@ sdev_rd_attr (vendor, "%.8s\n");
 sdev_rd_attr (model, "%.16s\n");
 sdev_rd_attr (rev, "%.4s\n");
 
+#ifdef SAMSUNG_PATCH_WITH_USB_HOTPLUG
+sdev_rd_attr (serial, "%.32s\n");			//add for usb serial number
+sdev_rd_attr (logicalnumber, "%.16s\n");		//add for usb logical number
+sdev_rd_attr (usbdevpath, "%.16s\n");			//add for usb device path
+#endif
 /*
  * TODO: can we make these symlinks to the block layer ones?
  */
@@ -682,6 +687,13 @@ static struct attribute *scsi_sdev_attrs[] = {
 	&dev_attr_scsi_level.attr,
 	&dev_attr_vendor.attr,
 	&dev_attr_model.attr,
+	
+#ifdef SAMSUNG_PATCH_WITH_USB_HOTPLUG	
+	&dev_attr_serial.attr,
+  	&dev_attr_logicalnumber.attr,
+ 	&dev_attr_usbdevpath.attr,  
+#endif
+
 	&dev_attr_rev.attr,
 	&dev_attr_rescan.attr,
 	&dev_attr_delete.attr,
@@ -928,16 +940,20 @@ void __scsi_remove_device(struct scsi_device *sdev)
 		device_del(dev);
 	} else
 		put_device(&sdev->sdev_dev);
+
+	/*
+	 * Stop accepting new requests and wait until all queuecommand() and
+	 * scsi_run_queue() invocations have finished before tearing down the
+	 * device.
+	 */
 	scsi_device_set_state(sdev, SDEV_DEL);
+	blk_cleanup_queue(sdev->request_queue);
+	cancel_work_sync(&sdev->requeue_work);
+	
 	if (sdev->host->hostt->slave_destroy)
 		sdev->host->hostt->slave_destroy(sdev);
 	transport_destroy_device(dev);
 
-	/* cause the request function to reject all I/O requests */
-	sdev->request_queue->queuedata = NULL;
-
-	/* Freeing the queue signals to block that we're done */
-	scsi_free_queue(sdev->request_queue);
 	put_device(dev);
 }
 

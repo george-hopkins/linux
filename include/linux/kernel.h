@@ -749,4 +749,9 @@ extern int __build_bug_on_failed;
 # define REBUILD_DUE_TO_FTRACE_MCOUNT_RECORD
 #endif
 
+#ifdef CONFIG_DTVLOGD
+/* Add for DTVLOGD */
+extern int do_dtvlog(int type, const char __user *buf, int len);
+#endif
+
 #endif

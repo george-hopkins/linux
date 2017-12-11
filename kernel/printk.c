@@ -488,6 +488,48 @@ SYSCALL_DEFINE3(syslog, int, type, char __user *, buf, int, len)
 	return do_syslog(type, buf, len, SYSLOG_FROM_CALL);
 }
 
+#ifdef CONFIG_SEPARATE_PRINTK_FROM_USER
+void _sep_printk_start(void)
+{
+    struct console *con;
+    struct tty_driver *tty_drv;
+    int index;
+
+    for_each_console(con) {
+        if ((con->flags & CON_ENABLED) && con->write &&
+            (cpu_online(raw_smp_processor_id()) ||
+            (con->flags & CON_ANYTIME))) {
+            
+            tty_drv = con->device(con, &index);
+            if ( (tty_drv) && !(strncmp ("ttyS", con->name, 4)) ) {
+                tty_drv->ttys[index]->hw_stopped = 1;
+                /* tty_drv->stop(tty_drv->ttys[index]); */
+            }
+        }
+    }
+}
+
+void _sep_printk_end(void)
+{
+    struct console *con;
+    struct tty_driver *tty_drv;
+    int index;
+
+    for_each_console(con) {
+        if ((con->flags & CON_ENABLED) && con->write &&
+            (cpu_online(raw_smp_processor_id()) ||
+            (con->flags & CON_ANYTIME))) {
+    
+            tty_drv = con->device(con, &index);
+            if ( (tty_drv) && !(strncmp ("ttyS", con->name, 4)) ) {
+                tty_drv->ttys[index]->hw_stopped = 0;
+                /* tty_drv->start(tty_drv->ttys[index]); */
+            }
+        }
+    }
+}
+#endif
+
 #ifdef	CONFIG_KGDB_KDB
 /* kdb dmesg command needs access to the syslog buffer.  do_syslog()
  * uses locks so it cannot be used during debugging.  Just tell kdb
@@ -634,7 +676,10 @@ static void call_console_drivers(unsigned start, unsigned end)
 	while (cur_index != end) {
 		if (msg_level < 0 && ((end - cur_index) > 2)) {
 			/* strip log prefix */
-			cur_index += log_prefix(&LOG_BUF(cur_index), &msg_level, NULL);
+			if (LOG_BUF(cur_index) == '<' && LOG_BUF(cur_index+2) == '>') {
+				msg_level = LOG_BUF(cur_index+1) - '0';
+				cur_index += 3;
+			}
 			start_print = cur_index;
 		}
 		while (cur_index != end) {
@@ -835,6 +880,10 @@ asmlinkage int vprintk(const char *fmt, va_list args)
 	size_t plen;
 	char special;
 
+#ifdef CONFIG_DTVLOGD
+	int count = 0;
+#endif
+
 	boot_delay_msec();
 	printk_delay();
 
@@ -917,6 +966,9 @@ asmlinkage int vprintk(const char *fmt, va_list args)
 				emit_log_char('>');
 				printed_len += 3;
 			}
+#ifdef CONFIG_DTVLOGD
+			count += 3;
+#endif
 
 			if (printk_time) {
 				/* Add the current time stamp */
@@ -943,7 +995,19 @@ asmlinkage int vprintk(const char *fmt, va_list args)
 		emit_log_char(*p);
 		if (*p == '\n')
 			new_text_line = 1;
+
+#ifdef CONFIG_DTVLOGD
+		count++;
+#endif
+
 	}
+
+#ifdef CONFIG_DTVLOGD
+	/*
+	 * Write printk messages to dlog buffer
+	 */
+	do_dtvlog(3, printk_buf, count);
+#endif
 
 	/*
 	 * Try to acquire and then immediately release the

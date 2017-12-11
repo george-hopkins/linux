@@ -1659,6 +1659,9 @@ __BUILD_SET_C0(config)
 __BUILD_SET_C0(intcontrol)
 __BUILD_SET_C0(intctl)
 __BUILD_SET_C0(srsmap)
+#ifdef CONFIG_NVT_CHIP
+__BUILD_SET_C0(config7)
+#endif /* CONFIG_NVT_CHIP */
 
 #endif /* !__ASSEMBLY__ */
 

@@ -53,6 +53,9 @@ static void bounce_copy_vec(struct bio_vec *to, unsigned char *vfrom)
 	local_irq_save(flags);
 	vto = kmap_atomic(to->bv_page, KM_BOUNCE_READ);
 	memcpy(vto + to->bv_offset, vfrom, to->bv_len);
+#ifdef CONFIG_MIPS
+	flush_data_cache_page(vto);
+#endif
 	kunmap_atomic(vto, KM_BOUNCE_READ);
 	local_irq_restore(flags);
 }
@@ -117,7 +120,12 @@ static void copy_to_high_bio_irq(struct bio *to, struct bio *from)
 		vfrom = page_address(fromvec->bv_page) + tovec->bv_offset;
 
 		bounce_copy_vec(tovec, vfrom);
+#ifdef CONFIG_MIPS
+		// do nothing...
+		// flush_data_cache_page() is called in bounce_copy_vec() instead...
+#else
 		flush_dcache_page(tovec->bv_page);
+#endif
 	}
 }
 

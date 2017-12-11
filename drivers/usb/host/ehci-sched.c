@@ -35,7 +35,7 @@
  */
 
 static int ehci_get_frame (struct usb_hcd *hcd);
-
+#ifndef CONFIG_NVT_NT72568
 #ifdef CONFIG_PCI
 
 static unsigned ehci_read_frame_index(struct ehci_hcd *ehci)
@@ -56,7 +56,7 @@ static unsigned ehci_read_frame_index(struct ehci_hcd *ehci)
 }
 
 #endif
-
+#endif
 /*-------------------------------------------------------------------------*/
 
 /*
@@ -509,7 +509,44 @@ static int enable_periodic (struct ehci_hcd *ehci)
 		ehci->last_periodic_enable = ktime_get_real();
 	return 0;
 }
+#ifdef CONFIG_NVT_NT72568
+static int disable_periodic (struct ehci_hcd *ehci)
+{
+	u32	cmd;
+	int	status;
 
+	if (--ehci->periodic_sched)
+		return 0;
+
+	if (unlikely(ehci->broken_periodic)) {
+		/* delay experimentally determined */
+		ktime_t safe = ktime_add_us(ehci->last_periodic_enable, 1000);
+		ktime_t now = ktime_get_real();
+		s64 delay = ktime_us_delta(safe, now);
+
+		if (unlikely(delay > 0))
+			udelay(delay);
+	}
+
+	/* did setting PSE not take effect yet?
+	 * takes effect only at frame boundaries...
+	 */
+	if ((ehci_readl(ehci, &ehci->regs->command)&CMD_PSE) != 0){
+		status = handshake_on_error_set_halt(ehci, &ehci->regs->status,
+						     STS_PSS, STS_PSS, 9 * 125);
+		if (status)
+			return status;
+	}
+	cmd = ehci_readl(ehci, &ehci->regs->command) & ~((unsigned int)CMD_PSE);
+	ehci_writel(ehci, cmd, &ehci->regs->command);
+	/* posted write ... */
+
+	free_cached_lists(ehci);
+
+	ehci->next_uframe = -1;
+	return 0;
+}
+#else
 static int disable_periodic (struct ehci_hcd *ehci)
 {
 	u32	cmd;
@@ -547,6 +584,8 @@ static int disable_periodic (struct ehci_hcd *ehci)
 	ehci->next_uframe = -1;
 	return 0;
 }
+
+#endif
 
 /*-------------------------------------------------------------------------*/
 
@@ -603,6 +642,9 @@ static int qh_link_periodic (struct ehci_hcd *ehci, struct ehci_qh *qh)
 			if (here.qh)
 				qh->hw->hw_next = *hw_p;
 			wmb ();
+			#ifdef CONFIG_NVT_NT72568
+			ACCESS_ONCE(qh->hw->hw_next);	
+			#endif
 			prev->qh = qh;
 			*hw_p = QH_NEXT (ehci, qh->qh_dma);
 		}
@@ -693,7 +735,9 @@ static void intr_deschedule (struct ehci_hcd *ehci, struct ehci_qh *qh)
 	qh->qh_state = QH_STATE_IDLE;
 	hw->hw_next = EHCI_LIST_END(ehci);
 	wmb ();
-
+	#ifdef CONFIG_NVT_NT72568
+	ACCESS_ONCE(hw->hw_next);
+	#endif
 	qh_completions(ehci, qh);
 
 	/* reschedule QH iff another request is queued */
@@ -916,6 +960,13 @@ static int intr_submit (
 		status = -ESHUTDOWN;
 		goto done_not_linked;
 	}
+#ifdef CONFIG_NVT_NT72568
+	if (unlikely(test_bit(HCD_FLAG_NRY,
+			&ehci_to_hcd(ehci)->flags))) {
+		status = -ENODEV;
+		goto done_not_linked;
+	}
+#endif
 	status = usb_hcd_link_urb_to_ep(ehci_to_hcd(ehci), urb);
 	if (unlikely(status))
 		goto done_not_linked;
@@ -1616,6 +1667,9 @@ itd_link (struct ehci_hcd *ehci, unsigned frame, struct ehci_itd *itd)
 	itd->frame = frame;
 	wmb ();
 	*hw_p = cpu_to_hc32(ehci, itd->itd_dma | Q_TYPE_ITD);
+#ifdef CONFIG_NVT_NT72568
+	ACCESS_ONCE(*hw_p);
+#endif
 }
 
 /* fit urb's itds into the selected schedule slot; activate as needed */
@@ -1644,12 +1698,12 @@ itd_link_urb (
 			urb->interval,
 			next_uframe >> 3, next_uframe & 0x7);
 	}
-
+#ifndef CONFIG_NVT_NT72568
 	if (ehci_to_hcd(ehci)->self.bandwidth_isoc_reqs == 0) {
 		if (ehci->amd_pll_fix == 1)
 			usb_amd_quirk_pll_disable();
 	}
-
+#endif
 	ehci_to_hcd(ehci)->self.bandwidth_isoc_reqs++;
 
 	/* fill iTDs uframe by uframe */
@@ -1774,11 +1828,12 @@ itd_complete (
 	(void) disable_periodic(ehci);
 	ehci_to_hcd(ehci)->self.bandwidth_isoc_reqs--;
 
+#ifndef CONFIG_NVT_NT72568
 	if (ehci_to_hcd(ehci)->self.bandwidth_isoc_reqs == 0) {
 		if (ehci->amd_pll_fix == 1)
 			usb_amd_quirk_pll_enable();
 	}
-
+#endif
 	if (unlikely(list_is_singular(&stream->td_list))) {
 		ehci_to_hcd(ehci)->self.bandwidth_allocated
 				-= stream->bandwidth;
@@ -1833,6 +1888,13 @@ static int itd_submit (struct ehci_hcd *ehci, struct urb *urb,
 		goto done;
 	}
 
+#ifdef CONFIG_NVT_NT72568
+	if (unlikely(test_bit(HCD_FLAG_NRY,
+			&ehci_to_hcd(ehci)->flags))) {
+		status = -ENODEV;
+		goto done;
+	}
+#endif
 #ifdef EHCI_URB_TRACE
 	ehci_dbg (ehci,
 		"%s %s urb %p ep%d%s len %d, %d pkts %d uframes [%p]\n",
@@ -2035,6 +2097,9 @@ sitd_link (struct ehci_hcd *ehci, unsigned frame, struct ehci_sitd *sitd)
 	sitd->frame = frame;
 	wmb ();
 	ehci->periodic[frame] = cpu_to_hc32(ehci, sitd->sitd_dma | Q_TYPE_SITD);
+#ifdef CONFIG_NVT_NT72568
+	ACCESS_ONCE(ehci->periodic[frame]);
+#endif
 }
 
 /* fit urb's sitds into the selected schedule slot; activate as needed */
@@ -2064,12 +2129,12 @@ sitd_link_urb (
 			(next_uframe >> 3) & (ehci->periodic_size - 1),
 			stream->interval, hc32_to_cpu(ehci, stream->splits));
 	}
-
+#ifndef CONFIG_NVT_NT72568
 	if (ehci_to_hcd(ehci)->self.bandwidth_isoc_reqs == 0) {
 		if (ehci->amd_pll_fix == 1)
 			usb_amd_quirk_pll_disable();
 	}
-
+#endif
 	ehci_to_hcd(ehci)->self.bandwidth_isoc_reqs++;
 
 	/* fill sITDs frame by frame */
@@ -2170,11 +2235,12 @@ sitd_complete (
 	(void) disable_periodic(ehci);
 	ehci_to_hcd(ehci)->self.bandwidth_isoc_reqs--;
 
+#ifndef CONFIG_NVT_NT72568
 	if (ehci_to_hcd(ehci)->self.bandwidth_isoc_reqs == 0) {
 		if (ehci->amd_pll_fix == 1)
 			usb_amd_quirk_pll_enable();
 	}
-
+#endif
 	if (list_is_singular(&stream->td_list)) {
 		ehci_to_hcd(ehci)->self.bandwidth_allocated
 				-= stream->bandwidth;
@@ -2228,6 +2294,13 @@ static int sitd_submit (struct ehci_hcd *ehci, struct urb *urb,
 		goto done;
 	}
 
+#ifdef CONFIG_NVT_NT72568
+	if (unlikely(test_bit(HCD_FLAG_NRY,
+		&ehci_to_hcd(ehci)->flags))) {
+		status = -ENODEV;
+		goto done;
+	}
+#endif
 #ifdef EHCI_URB_TRACE
 	ehci_dbg (ehci,
 		"submit %p dev%s ep%d%s-iso len %d\n",

@@ -114,6 +114,9 @@ qh_update (struct ehci_hcd *ehci, struct ehci_qh *qh, struct ehci_qtd *qtd)
 	/* HC must see latest qtd and qh data before we clear ACTIVE+HALT */
 	wmb ();
 	hw->hw_token &= cpu_to_hc32(ehci, QTD_TOGGLE | QTD_STS_PING);
+#ifdef CONFIG_NVT_NT72568
+	ACCESS_ONCE(hw->hw_token);
+#endif
 }
 
 /* if it weren't for a common silicon quirk (writing the dummy into the qh
@@ -218,8 +221,17 @@ static int qtd_copy_status (
 			status = -EOVERFLOW;
 		/* CERR nonzero + halt --> stall */
 		} else if (QTD_CERR(token)) {
+#ifdef SAMSUNG_PATCH_WITH_USB_ENHANCEMENT
+		/*
+		 * 20121221, BugFIX for HUB disconnect when FS_HS split transaction
+		 */
+		if((token & QTD_STS_MMF) && (token & QTD_STS_XACT) && (urb->dev->speed != USB_SPEED_HIGH))
+			status = -ESHUTDOWN;
+		else
 			status = -EPIPE;
-
+#else
+			status = -EPIPE;
+#endif
 		/* In theory, more than one of the following bits can be set
 		 * since they are sticky and the transaction is retried.
 		 * Which to test first is rather arbitrary.
@@ -238,7 +250,26 @@ static int qtd_copy_status (
 				usb_pipeendpoint(urb->pipe),
 				usb_pipein(urb->pipe) ? "in" : "out");
 			status = -EPROTO;
+#ifdef SAMSUNG_PATCH_WITH_USB_ENHANCEMENT
+		/*
+                 * 20121221, BugFIX for HUB disconnect when FS_HS split transaction
+	         */
+		if((urb->dev->speed != USB_SPEED_HIGH))
+			status = -ESHUTDOWN;
+#endif
 		} else {	/* unknown */
+
+#ifdef SAMSUNG_PATCH_WITH_USB_ENHANCEMENT
+			/* 20070514, patch for STALL endpoint case with TP-U20W.
+			 * 20111228, patch for TT clear case with MicroSoft's wireless keyboard dongle.
+			 * unless we already know the urb's status through ping, update token's status.
+			 */
+			if(!(token & QTD_STS_ACTIVE)
+					&& !(token & QTD_STS_PING))
+				urb->status = -EPIPE;
+			else
+
+#endif
 			status = -EPROTO;
 		}
 
@@ -315,6 +346,9 @@ qh_completions (struct ehci_hcd *ehci, struct ehci_qh *qh)
 	int			stopped;
 	unsigned		count = 0;
 	u8			state;
+#ifdef CONFIG_NVT_NT72568
+	const __le32        halt = HALT_BIT(ehci);
+#endif
 	struct ehci_qh_hw	*hw = qh->hw;
 
 	if (unlikely (list_empty (&qh->qtd_list)))
@@ -334,6 +368,11 @@ qh_completions (struct ehci_hcd *ehci, struct ehci_qh *qh)
 	qh->qh_state = QH_STATE_COMPLETING;
 	stopped = (state == QH_STATE_IDLE);
 
+#ifdef CONFIG_NVT_NT72568
+	if (test_bit(1,&(ehci_to_hcd(ehci)->porcd2))) {
+		stopped = 1;
+	}
+#endif
  rescan:
 	last = NULL;
 	last_status = -EINPROGRESS;
@@ -404,6 +443,9 @@ qh_completions (struct ehci_hcd *ehci, struct ehci_qh *qh)
 					wmb();
 					hw->hw_token = cpu_to_hc32(ehci,
 							token);
+#ifdef CONFIG_NVT_NT72568
+					ACCESS_ONCE(hw->hw_token);
+#endif
 					goto retry_xacterr;
 				}
 				stopped = 1;
@@ -421,6 +463,9 @@ qh_completions (struct ehci_hcd *ehci, struct ehci_qh *qh)
 					&& !(qtd->hw_alt_next
 						& EHCI_LIST_END(ehci))) {
 				stopped = 1;
+#ifdef CONFIG_NVT_NT72568
+				goto halt;
+#endif
 			}
 
 		/* stop scanning when we reach qtds the hc is using */
@@ -431,7 +476,11 @@ qh_completions (struct ehci_hcd *ehci, struct ehci_qh *qh)
 		/* scan the whole queue for unlinks whenever it stops */
 		} else {
 			stopped = 1;
-
+#ifdef CONFIG_NVT_NT72568
+			if (test_bit(1,&(ehci_to_hcd(ehci)->porcd2))) {
+				last_status = -ENOTCONN;
+			}
+#endif
 			/* cancel everything if we halt, suspend, etc */
 			if (!HC_IS_RUNNING(ehci_to_hcd(ehci)->state))
 				last_status = -ESHUTDOWN;
@@ -454,6 +503,19 @@ qh_completions (struct ehci_hcd *ehci, struct ehci_qh *qh)
 				 */
 				ehci_clear_tt_buffer(ehci, qh, urb, token);
 			}
+
+#ifdef CONFIG_NVT_NT72568
+			/* force halt for unlinked or blocked qh, so we'll
+			 * patch the qh later and so that completions can't
+			 * activate it while we "know" it's stopped.
+			 */
+			if ((halt & hw->hw_token) == 0) {
+halt:
+				hw->hw_token |= halt;
+				wmb ();
+				ACCESS_ONCE(hw->hw_token);
+			}
+#endif
 		}
 
 		/* unless we already know the urb's status, collect qtd status
@@ -967,6 +1029,12 @@ static void qh_link_async (struct ehci_hcd *ehci, struct ehci_qh *qh)
 
 	WARN_ON(qh->qh_state != QH_STATE_IDLE);
 
+#ifdef CONFIG_NVT_NT72568
+	if((qh->dev->parent->devpath[0] == '0') && unlikely(qh->dev->descriptor.idVendor == 0x04e8) && unlikely(qh->dev->descriptor.idProduct == 0x5014)) {
+		udelay(1);
+	}
+#endif
+
 	/* (re)start the async schedule? */
 	head = ehci->async;
 	timer_action_done (ehci, TIMER_ASYNC_OFF);
@@ -991,6 +1059,10 @@ static void qh_link_async (struct ehci_hcd *ehci, struct ehci_qh *qh)
 	qh->qh_next = head->qh_next;
 	qh->hw->hw_next = head->hw->hw_next;
 	wmb ();
+
+#ifdef CONFIG_NVT_NT72568
+	ACCESS_ONCE(qh->hw->hw_next);
+#endif
 
 	head->qh_next.qh = qh;
 	head->hw->hw_next = dma;
@@ -1059,6 +1131,9 @@ static struct ehci_qh *qh_append_tds (
 			token = qtd->hw_token;
 			qtd->hw_token = HALT_BIT(ehci);
 			wmb ();
+#ifdef CONFIG_NVT_NT72568
+			ACCESS_ONCE(qtd->hw_token);
+#endif
 			dummy = qh->dummy;
 
 			dma = dummy->qtd_dma;
@@ -1080,7 +1155,11 @@ static struct ehci_qh *qh_append_tds (
 
 			/* let the hc process these next qtds */
 			wmb ();
+#ifdef CONFIG_NVT_NT72568
+			ACCESS_ONCE(qtd->hw_next);
+#endif
 			dummy->hw_token = token;
+			wmb ();// sdp add code echoP
 
 			urb->hcpriv = qh_get (qh);
 		}
@@ -1122,6 +1201,13 @@ submit_async (
 		rc = -ESHUTDOWN;
 		goto done;
 	}
+#ifdef CONFIG_NVT_NT72568
+	if (unlikely(test_bit(HCD_FLAG_NRY,
+					&ehci_to_hcd(ehci)->flags))) {
+		rc = -ENODEV;
+		goto done;
+	}
+#endif
 	rc = usb_hcd_link_urb_to_ep(ehci_to_hcd(ehci), urb);
 	if (unlikely(rc))
 		goto done;
@@ -1186,9 +1272,11 @@ static void end_unlink_async (struct ehci_hcd *ehci)
 		start_unlink_async (ehci, next);
 	}
 
+#ifndef CONFIG_NVT_NT72568
 	if (ehci->has_synopsys_hc_bug)
 		ehci_writel(ehci, (u32) ehci->async->qh_dma,
 			    &ehci->regs->async_next);
+#endif
 }
 
 /* makes sure the async qh will become idle */
@@ -1201,10 +1289,16 @@ static void start_unlink_async (struct ehci_hcd *ehci, struct ehci_qh *qh)
 
 #ifdef DEBUG
 	assert_spin_locked(&ehci->lock);
+#ifdef CONFIG_NVT_NT72568
+	if(qh->qh_state != QH_STATE_LINKED
+			&& qh->qh_state != QH_STATE_UNLINK_WAIT)
+
+#else
 	if (ehci->reclaim
 			|| (qh->qh_state != QH_STATE_LINKED
 				&& qh->qh_state != QH_STATE_UNLINK_WAIT)
 			)
+#endif
 		BUG ();
 #endif
 
@@ -1217,6 +1311,9 @@ static void start_unlink_async (struct ehci_hcd *ehci, struct ehci_qh *qh)
 			ehci_writel(ehci, cmd & ~CMD_ASE,
 				    &ehci->regs->command);
 			wmb ();
+#ifdef CONFIG_NVT_NT72568
+			ACCESS_ONCE(ehci->regs->command);
+#endif
 			// handshake later, if we need to
 			timer_action_done (ehci, TIMER_ASYNC_OFF);
 		}
@@ -1236,6 +1333,9 @@ static void start_unlink_async (struct ehci_hcd *ehci, struct ehci_qh *qh)
 		ehci->qh_scan_next = qh->qh_next.qh;
 	wmb ();
 
+#ifdef CONFIG_NVT_NT72568
+	ACCESS_ONCE(prev->hw->hw_next);
+#endif
 	/* If the controller isn't running, we don't have to wait for it */
 	if (unlikely(!HC_IS_RUNNING(ehci_to_hcd(ehci)->state))) {
 		/* if (unlikely (qh->reclaim != 0))
@@ -1248,7 +1348,10 @@ static void start_unlink_async (struct ehci_hcd *ehci, struct ehci_qh *qh)
 	cmd |= CMD_IAAD;
 	ehci_writel(ehci, cmd, &ehci->regs->command);
 	(void)ehci_readl(ehci, &ehci->regs->command);
-	iaa_watchdog_start(ehci);
+#ifdef CONFIG_NVT_NT72568
+	if (!timer_pending(&ehci->iaa_watchdog))
+#endif
+		iaa_watchdog_start(ehci);
 }
 
 /*-------------------------------------------------------------------------*/
@@ -1258,6 +1361,16 @@ static void scan_async (struct ehci_hcd *ehci)
 	bool			stopped;
 	struct ehci_qh		*qh;
 	enum ehci_timer_action	action = TIMER_IO_WATCHDOG;
+
+
+#ifdef SAMSUNG_PATCH_WITH_USB_ENHANCEMENT
+	 //20071218 for strength usb	 
+#ifdef CONFIG_SAMSUNG_HOST_DUAL_EEM_SUPPORT
+	//udelay(50);
+#else
+	udelay(50);
+#endif
+#endif
 
 	timer_action_done (ehci, TIMER_ASYNC_SHRINK);
 	stopped = !HC_IS_RUNNING(ehci_to_hcd(ehci)->state);

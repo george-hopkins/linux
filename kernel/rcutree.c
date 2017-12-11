@@ -531,7 +531,11 @@ static void record_gp_stall_check_time(struct rcu_state *rsp)
 	rsp->gp_start = jiffies;
 	rsp->jiffies_stall = jiffies + RCU_SECONDS_TILL_STALL_CHECK;
 }
-
+#ifdef CONFIG_ARCH_SDP1202
+#ifndef CONFIG_VD_RELEASE 
+extern int micom_reboot(void);
+#endif
+#endif
 static void print_other_cpu_stall(struct rcu_state *rsp)
 {
 	int cpu;
@@ -576,13 +580,23 @@ static void print_other_cpu_stall(struct rcu_state *rsp)
 	printk("} (detected by %d, t=%ld jiffies)\n",
 	       smp_processor_id(), (long)(jiffies - rsp->gp_start));
 	trigger_all_cpu_backtrace();
-
+#ifdef CONFIG_ARCH_SDP1202
+#ifndef CONFIG_VD_RELEASE 
+	smp_send_stop();
+	micom_reboot();
+#endif
+#endif
 	/* If so configured, complain about tasks blocking the grace period. */
 
 	rcu_print_detail_task_stall(rsp);
 
 	force_quiescent_state(rsp, 0);  /* Kick them all. */
 }
+#ifdef CONFIG_ARCH_SDP1202
+#ifndef CONFIG_VD_RELEASE 
+extern volatile unsigned int *g_sdprcu;
+#endif
+#endif
 
 static void print_cpu_stall(struct rcu_state *rsp)
 {
@@ -596,8 +610,18 @@ static void print_cpu_stall(struct rcu_state *rsp)
 	 */
 	printk(KERN_ERR "INFO: %s detected stall on CPU %d (t=%lu jiffies)\n",
 	       rsp->name, smp_processor_id(), jiffies - rsp->gp_start);
+#ifdef CONFIG_ARCH_SDP1202
+#ifndef CONFIG_VD_RELEASE 
+	printk("0x184000ac : 0x%08X\n", *g_sdprcu);
+#endif
+#endif
 	trigger_all_cpu_backtrace();
-
+#ifdef CONFIG_ARCH_SDP1202
+#ifndef CONFIG_VD_RELEASE 
+	dump_stack();
+	micom_reboot();
+#endif
+#endif
 	raw_spin_lock_irqsave(&rnp->lock, flags);
 	if (ULONG_CMP_GE(jiffies, rsp->jiffies_stall))
 		rsp->jiffies_stall =

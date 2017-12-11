@@ -24,6 +24,10 @@ enum mapping_flags {
 	AS_ENOSPC	= __GFP_BITS_SHIFT + 1,	/* ENOSPC on async write */
 	AS_MM_ALL_LOCKS	= __GFP_BITS_SHIFT + 2,	/* under mm_take_all_locks() */
 	AS_UNEVICTABLE	= __GFP_BITS_SHIFT + 3,	/* e.g., ramdisk, SHM_LOCK */
+#if defined (CONFIG_BD_CACHE_ENABLED)
+	AS_DIRECT  =   __GFP_BITS_SHIFT + 4,  /* DIRECT_IO specified on file op */
+#endif
+	AS_EBAD		= __GFP_BITS_SHIFT + 5 /* Bad Sector Error bit */
 };
 
 static inline void mapping_set_error(struct address_space *mapping, int error)
@@ -372,6 +376,9 @@ static inline int wait_on_page_locked_killable(struct page *page)
 	return 0;
 }
 
+#ifdef CONFIG_SQUASHFS_INCL_BIO
+extern void wait_on_page_update_bit(struct page *page, int bit_nr, wait_queue_head_t * wq);
+#endif
 /* 
  * Wait for a page to be unlocked.
  *
@@ -394,6 +401,14 @@ static inline void wait_on_page_writeback(struct page *page)
 		wait_on_page_bit(page, PG_writeback);
 }
 
+#ifdef  CONFIG_SQUASHFS_INCL_BIO
+static inline void wait_on_page_update(struct page *page, wait_queue_head_t * wq)
+    {
+	might_sleep();
+    wait_on_page_update_bit(page,PG_uptodate,wq);
+    }
+
+#endif
 extern void end_page_writeback(struct page *page);
 
 /*

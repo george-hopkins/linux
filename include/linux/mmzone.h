@@ -35,6 +35,39 @@
  */
 #define PAGE_ALLOC_COSTLY_ORDER 3
 
+#ifdef CONFIG_CMA
+enum {
+	MIGRATE_UNMOVABLE,
+	MIGRATE_RECLAIMABLE,
+	MIGRATE_MOVABLE,
+	MIGRATE_PCPTYPES,	/* the number of types on the pcp lists */
+	MIGRATE_RESERVE = MIGRATE_PCPTYPES,
+#ifdef CONFIG_MIGRATE_CMA
+	/*
+	 * MIGRATE_CMA migration type is designed to mimic the way
+	 * ZONE_MOVABLE works.  Only movable pages can be allocated
+	 * from MIGRATE_CMA pageblocks and page allocator never
+	 * implicitly change migration type of MIGRATE_CMA pageblock.
+	 *
+	 * The way to use it is to change migratetype of a range of
+	 * pageblocks to MIGRATE_CMA which can be done by
+	 * __free_pageblock_cma() function.  What is important though
+	 * is that a range of pageblocks must be aligned to
+	 * MAX_ORDER_NR_PAGES should biggest page be bigger then
+	 * a single pageblock.
+	 */
+	MIGRATE_CMA,
+#endif
+	MIGRATE_ISOLATE,	/* can't allocate from here */
+	MIGRATE_TYPES
+};
+
+#ifdef CONFIG_MIGRATE_CMA
+#  define is_migrate_cma(migratetype) unlikely((migratetype) == MIGRATE_CMA)
+#else
+#  define is_migrate_cma(migratetype) false
+#endif
+#else
 #define MIGRATE_UNMOVABLE     0
 #define MIGRATE_RECLAIMABLE   1
 #define MIGRATE_MOVABLE       2
@@ -42,6 +75,7 @@
 #define MIGRATE_RESERVE       3
 #define MIGRATE_ISOLATE       4 /* can't allocate from here */
 #define MIGRATE_TYPES         5
+#endif
 
 #define for_each_migratetype_order(order, type) \
 	for (order = 0; order < MAX_ORDER; order++) \
@@ -53,6 +87,13 @@ static inline int get_pageblock_migratetype(struct page *page)
 {
 	return get_pageblock_flags_group(page, PB_migrate, PB_migrate_end);
 }
+
+#ifdef CONFIG_CMA
+static inline bool is_pageblock_cma(struct page *page)
+{
+	return is_migrate_cma(get_pageblock_migratetype(page));
+}
+#endif
 
 struct free_area {
 	struct list_head	free_list[MIGRATE_TYPES];
@@ -115,7 +156,17 @@ enum zone_stat_item {
 	NUMA_OTHER,		/* allocation from other node */
 #endif
 	NR_ANON_TRANSPARENT_HUGEPAGES,
+#if defined(CONFIG_CMA) 
+	NR_CMA_FREE_PAGES,
+	NR_CMA_ISOLATED_PAGES,
+#endif
 	NR_VM_ZONE_STAT_ITEMS };
+
+#ifdef CONFIG_CMA
+// return number of pages in CMA region
+//#define CMA_free_pages() global_page_state(NR_CMA_FREE_PAGES)
+//#define CMA_free_isolated_pages() global_page_state(NR_CMA_ISOLATED_PAGES)
+#endif
 
 /*
  * We do arithmetic on the LRU lists in various places in the code,

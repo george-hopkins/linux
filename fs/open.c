@@ -27,6 +27,9 @@
 #include <linux/rcupdate.h>
 #include <linux/audit.h>
 #include <linux/falloc.h>
+#ifdef CONFIG_FS_SEL_READAHEAD
+extern atomic_t *disk_name_from_dev(dev_t dev);
+#endif
 #include <linux/fs_struct.h>
 #include <linux/ima.h>
 #include <linux/dnotify.h>
@@ -721,6 +724,20 @@ static struct file *__dentry_open(struct dentry *dentry, struct vfsmount *mnt,
 
 	file_ra_state_init(&f->f_ra, f->f_mapping->host->i_mapping);
 
+#ifdef CONFIG_FS_SEL_READAHEAD
+	if (S_ISCHR(f->f_path.dentry->d_inode->i_mode) ||
+		S_ISFIFO(f->f_path.dentry->d_inode->i_mode)){
+		f->f_ra.state = NULL;
+	}else if (S_ISBLK(f->f_path.dentry->d_inode->i_mode)){
+		f->f_ra.state = 
+		disk_name_from_dev(f->f_path.dentry->d_inode->i_rdev);
+	}else {
+		f->f_ra.state = 
+		disk_name_from_dev(f->f_path.mnt->mnt_sb->s_dev);
+	}
+#endif         
+
+
 	/* NB: we're sure to have correct a_ops only after f_op->open */
 	if (f->f_flags & O_DIRECT) {
 		if (!f->f_mapping->a_ops ||
@@ -1005,6 +1022,10 @@ long do_sys_open(int dfd, const char __user *filename, int flags, int mode)
 			} else {
 				fsnotify_open(f);
 				fd_install(fd, f);
+#ifdef CONFIG_BD_CACHE_ENABLED
+				if(f->f_flags & O_BDCACHE)          
+					set_bit(AS_DIRECT, &f->f_mapping->flags);       
+#endif
 			}
 		}
 		putname(tmp);

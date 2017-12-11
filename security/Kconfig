@@ -103,6 +103,15 @@ config SECURITYFS
 
 	  If you are unsure how to answer this question, answer N.
 
+config SECURITY_DEBUG 
+        bool "Enable the securityfs Performance Debugging"
+	default y
+	depends on SECURITY
+	depends on SECURITYFS
+        help
+          This will enable measuring time for all TOMOYO and measure LSM hooks.  
+          If you are unsure how to answer this question, answer N.
+
 config SECURITY_NETWORK
 	bool "Socket and Networking Security Hooks"
 	depends on SECURITY

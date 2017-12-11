@@ -48,6 +48,10 @@
 #include "xfs_vnodeops.h"
 #include "xfs_trace.h"
 
+#ifdef CONFIG_XFS_FS_SPLIT
+#include "xfs_extfree_item.h"
+#endif
+
 kmem_zone_t *xfs_ifork_zone;
 kmem_zone_t *xfs_inode_zone;
 
@@ -1371,6 +1375,507 @@ xfs_itruncate_start(
 #endif
 	return error;
 }
+#ifdef CONFIG_XFS_FS_SPLIT
+int
+xfs_isplit(
+        xfs_trans_t     **tp,
+        xfs_inode_t     *ip,
+        xfs_fsize_t     start_offset,
+        xfs_fsize_t     end_offset,
+        int             fork,
+        int             sync,
+        xfs_split_data_t *split_data)
+{
+        xfs_fsblock_t   first_block;
+        xfs_fsize_t     new_size;
+        xfs_fsize_t     orig_size;
+        xfs_fileoff_t   first_unmap_block;
+        xfs_fileoff_t   last_unmap_block;
+        xfs_fileoff_t   last_block;
+        xfs_filblks_t   unmap_len=0;
+        xfs_mount_t     *mp;
+        xfs_trans_t     *ntp;
+        int             done;
+        int             committed;
+        xfs_bmap_free_t free_list;
+        int             error=0;
+        uint            uBlockSize;
+
+	ASSERT(xfs_isilocked(ip, XFS_ILOCK_EXCL|XFS_IOLOCK_EXCL));
+
+        ASSERT(*tp != NULL);
+        ASSERT((*tp)->t_flags & XFS_TRANS_PERM_LOG_RES);
+        ASSERT(ip->i_transp == *tp);
+        ASSERT(ip->i_itemp != NULL);
+		ASSERT(ip->i_itemp->ili_lock_flags == 0);
+
+        if(end_offset > ip->i_d.di_size)
+                end_offset = ip->i_d.di_size;
+
+        ntp = *tp;
+        mp = (ntp)->t_mountp;
+
+        ASSERT(! XFS_NOT_DQATTACHED(mp, ip));
+
+        uBlockSize = ip->i_mount->m_sb.sb_blocksize;
+
+        new_size = start_offset;
+
+        first_unmap_block = XFS_B_TO_FSB(mp, (xfs_ufsize_t)start_offset);
+        last_unmap_block  = XFS_B_TO_FSB(mp, (xfs_ufsize_t)end_offset);
+
+
+        orig_size = do_mod(ip->i_d.di_size,uBlockSize);
+        if (fork == XFS_DATA_FORK) {
+                if (ip->i_d.di_nextents > 0) {
+                        ip->i_d.di_size = new_size;
+                        ip->i_size = new_size; //AS
+                        xfs_trans_log_inode(ntp, ip, XFS_ILOG_CORE);
+                }
+        }
+
+        last_block = XFS_B_TO_FSB(mp, (xfs_ufsize_t)XFS_MAXIOFFSET(mp));
+        ASSERT(first_unmap_block <= last_unmap_block);
+        done = 0;
+
+        if (last_block == first_unmap_block) {
+                done = 1;
+        } else {
+		/*
+		 * unmap length is used '1' for split, this unmap length will be replaced by '0'
+		 * after we reach at the specified offset using xfs_bmap_split
+		 */
+                unmap_len = 1;
+        }
+        while (!done) {
+
+                xfs_bmap_init(&free_list, &first_block);
+
+                error = xfs_bmap_split(ntp,ip,
+                                    first_unmap_block, unmap_len,
+                                    xfs_bmapi_aflag(fork),
+                                    XFS_ITRUNC_MAX_EXTENTS,
+                                    &first_block, &free_list,
+                                    &done, split_data);
+                if (error) {
+                        /*
+			 * If the xfs_bmap_split call encounters an error,
+			 * return to the caller where the transaction
+			 * can be properly aborted.  We just need to
+			 * make sure we're not holding any resources
+			 * that we were not when we came in.
+			 */
+                        xfs_bmap_cancel(&free_list);
+                        return error;
+                }
+                unmap_len = 0;
+                free_list.xbf_count = 0;
+
+                error = xfs_bmap_finish(tp, &free_list, &committed);
+                ntp = *tp;
+
+		if (committed)
+			xfs_trans_ijoin(ntp, ip);
+
+                if (error) {
+                        xfs_bmap_cancel(&free_list);
+                        return error;
+                }
+
+                if (committed) {
+                        xfs_trans_log_inode(ntp, ip, XFS_ILOG_CORE);
+                }
+
+                ntp = xfs_trans_dup(ntp);
+		error = xfs_trans_commit(*tp, 0);
+                *tp = ntp;
+
+		xfs_trans_ijoin(ntp, ip);
+
+		if (error)
+			return error;
+
+		/*
+		 * transaction commit worked ok so we can drop the extra ticket
+		 * reference that we gained in xfs_trans_dup()
+		 */
+		xfs_log_ticket_put(ntp->t_ticket);
+		error = xfs_trans_reserve(ntp, 0,
+				XFS_ITRUNCATE_LOG_RES(mp), 0,
+				XFS_TRANS_PERM_LOG_RES,
+				XFS_ITRUNCATE_LOG_COUNT);
+		if (error)
+			return error;
+
+        }
+
+        if(!error)
+        {
+                 xfs_inode_t *new_ip = (xfs_inode_t*)split_data->ip;
+                 unsigned int size_rem = 0;
+
+                if(orig_size)
+                        size_rem = uBlockSize - orig_size;
+
+                 new_ip->i_d.di_size = new_ip->i_d.di_size - size_rem;
+                 new_ip->i_size = new_ip->i_d.di_size;
+        }
+
+        if (fork == XFS_DATA_FORK) {
+                        if(ip->i_size != new_size) {
+                                ip->i_d.di_size = new_size;
+                                ip->i_size = new_size;
+                }
+        }
+
+        xfs_trans_log_inode(ntp, ip, XFS_ILOG_CORE);
+
+        ASSERT((new_size != 0) ||
+               (fork == XFS_ATTR_FORK) ||
+               (ip->i_delayed_blks == 0));
+        ASSERT((new_size != 0) ||
+               (fork == XFS_ATTR_FORK) ||
+               (ip->i_d.di_nextents == 0));
+
+        return 0;
+}
+
+/* *
+ * Actual free of leaf block extents from the file after
+ * split is done
+ * */
+int
+xfs_free_after_split(   xfs_trans_t     **tp,
+                        xfs_inode_t     *ip,
+                        xfs_split_data_t *split_data)
+{
+        xfs_bmap_free_t* flist;/* List of leaf block extents to be freed*/
+        xfs_bmap_free_item_t* free; /* pointer to leaf block extent*/
+        xfs_bmap_free_item_t* next;
+        xfs_efi_log_item_t *efi;        /* extent free intention */
+        xfs_efd_log_item_t *efd;        /* extent free data */
+
+        int error;
+        xfs_mount_t*    mp;
+
+        if(!split_data->flist)
+                return -XFS_ERROR(EINVAL);
+        else
+                flist = (xfs_bmap_free_t*)split_data->flist;
+
+        if(0 == flist->xbf_count)
+                return -XFS_ERROR(EINVAL);
+
+        efi = xfs_trans_get_efi(*tp,flist->xbf_count);
+        for(free = flist->xbf_first; free; free=free->xbfi_next)
+                xfs_trans_log_efi_extent(*tp,efi,free->xbfi_startblock,
+                                        free->xbfi_blockcount);
+
+        efd = xfs_trans_get_efd(*tp, efi, flist->xbf_count);
+
+        for (free = flist->xbf_first; free != NULL; free = next)
+        {
+                next = free->xbfi_next;
+                if ((error = xfs_free_extent(*tp, free->xbfi_startblock,
+                                free->xbfi_blockcount)))
+                {
+                        /*
+			 * The bmap free list will be cleaned up at a
+			 * higher level.  The EFI will be canceled when
+			 * this transaction is aborted.
+			 * Need to force shutdown here to make sure it
+			 * happens, since this transaction may not be
+			 * dirty yet.
+			 */
+                        mp = (*tp)->t_mountp;
+                        if (!XFS_FORCED_SHUTDOWN(mp))
+                                xfs_force_shutdown(mp,
+                                                   (error == EFSCORRUPTED) ?
+                                                   SHUTDOWN_CORRUPT_INCORE :
+                                                   SHUTDOWN_META_IO_ERROR);
+                        goto freeblocks;
+                }
+                xfs_trans_log_efd_extent(*tp, efd, free->xbfi_startblock,
+                        free->xbfi_blockcount);
+                xfs_del_split_flist(flist, NULL, free);
+        }
+        return 0;
+
+freeblocks:
+        /* Free the memory held by the extent free list*/
+        if(flist->xbf_count == 0)
+                return error;
+        ASSERT(flist->xbf_first != NULL);
+        for(free = flist->xbf_first; free; free = next){
+                next = free->xbfi_next;
+                xfs_del_split_flist(flist, NULL, free);
+        }
+        ASSERT(flist->xbf_count == 0);
+        return error;
+}
+#endif
+#ifdef CONFIG_XFS_FS_TRUNCATE_RANGE
+int
+xfs_itruncate_range(
+        xfs_trans_t     **tp,
+        xfs_inode_t     *ip,
+        xfs_fsize_t     start_offset,
+        xfs_fsize_t     end_offset,
+        int             fork,
+        int             sync)
+{
+	xfs_fsblock_t	first_block;
+	xfs_fsize_t new_size;
+	xfs_fileoff_t	first_unmap_block;
+	xfs_fileoff_t	last_unmap_block;
+	xfs_fileoff_t	last_block;
+	xfs_filblks_t	unmap_len=0;
+	xfs_mount_t	*mp;
+	xfs_trans_t	*ntp;
+	int		done;
+	int		committed;
+	xfs_bmap_free_t	free_list;
+	int		error;
+	uint		uBlockSize;
+
+	ASSERT(xfs_isilocked(ip, XFS_ILOCK_EXCL|XFS_IOLOCK_EXCL));
+	ASSERT(*tp != NULL);
+	ASSERT((*tp)->t_flags & XFS_TRANS_PERM_LOG_RES);
+	ASSERT(ip->i_transp == *tp);
+	ASSERT(ip->i_itemp != NULL);
+	ASSERT(ip->i_itemp->ili_lock_flags == 0);
+	ASSERT(start_offset < end_offset);
+
+	if(end_offset > ip->i_d.di_size)
+		end_offset = ip->i_d.di_size;
+
+	ntp = *tp;
+	mp = (ntp)->t_mountp;
+	ASSERT(! XFS_NOT_DQATTACHED(mp, ip));
+
+	/*
+	 * We only support truncating the entire attribute fork.
+	 */
+	if (fork == XFS_ATTR_FORK) {
+		new_size = 0LL;
+	}
+	uBlockSize = ip->i_mount->m_sb.sb_blocksize;
+
+	new_size = ip->i_d.di_size - (end_offset - start_offset);
+
+	first_unmap_block = XFS_B_TO_FSB(mp, (xfs_ufsize_t)start_offset);
+	last_unmap_block = XFS_B_TO_FSB(mp, (xfs_ufsize_t)end_offset);
+	trace_xfs_itruncate_finish_start(ip, new_size);
+
+	/*
+	 * The first thing we do is set the size to new_size permanently
+	 * on disk.  This way we don't have to worry about anyone ever
+	 * being able to look at the data being freed even in the face
+	 * of a crash.  What we're getting around here is the case where
+	 * we free a block, it is allocated to another file, it is written
+	 * to, and then we crash.  If the new data gets written to the
+	 * file but the log buffers containing the free and reallocation
+	 * don't, then we'd end up with garbage in the blocks being freed.
+	 * As long as we make the new_size permanent before actually
+	 * freeing any blocks it doesn't matter if they get writtten to.
+	 *
+	 * The callers must signal into us whether or not the size
+	 * setting here must be synchronous.  There are a few cases
+	 * where it doesn't have to be synchronous.  Those cases
+	 * occur if the file is unlinked and we know the unlink is
+	 * permanent or if the blocks being truncated are guaranteed
+	 * to be beyond the inode eof (regardless of the link count)
+	 * and the eof value is permanent.  Both of these cases occur
+	 * only on wsync-mounted filesystems.  In those cases, we're
+	 * guaranteed that no user will ever see the data in the blocks
+	 * that are being truncated so the truncate can run async.
+	 * In the free beyond eof case, the file may wind up with
+	 * more blocks allocated to it than it needs if we crash
+	 * and that won't get fixed until the next time the file
+	 * is re-opened and closed but that's ok as that shouldn't
+	 * be too many blocks.
+	 *
+	 * However, we can't just make all wsync xactions run async
+	 * because there's one call out of the create path that needs
+	 * to run sync where it's truncating an existing file to size
+	 * 0 whose size is > 0.
+	 *
+	 * It's probably possible to come up with a test in this
+	 * routine that would correctly distinguish all the above
+	 * cases from the values of the function parameters and the
+	 * inode state but for sanity's sake, I've decided to let the
+	 * layers above just tell us.  It's simpler to correctly figure
+	 * out in the layer above exactly under what conditions we
+	 * can run async and I think it's easier for others read and
+	 * follow the logic in case something has to be changed.
+	 * cscope is your friend -- rcc.
+	 *
+	 * The attribute fork is much simpler.
+	 *
+	 * For the attribute fork we allow the caller to tell us whether
+	 * the unlink of the inode that led to this call is yet permanent
+	 * in the on disk log.  If it is not and we will be freeing extents
+	 * in this inode then we make the first transaction synchronous
+	 * to make sure that the unlink is permanent by the time we free
+	 * the blocks.
+	 */
+	if (fork == XFS_DATA_FORK) {
+		if (ip->i_d.di_nextents > 0) {
+			ip->i_d.di_size = new_size;
+			ip->i_size = new_size;
+			xfs_trans_log_inode(ntp, ip, XFS_ILOG_CORE);
+		}
+	}
+
+	/*
+	 * Since it is possible for space to become allocated beyond
+	 * the end of the file (in a crash where the space is allocated
+	 * but the inode size is not yet updated), simply remove any
+	 * blocks which show up between the new EOF and the maximum
+	 * possible file size.  If the first block to be removed is
+	 * beyond the maximum file size (ie it is the same as last_block),
+	 * then there is nothing to do.
+	 */
+	last_block = XFS_B_TO_FSB(mp, (xfs_ufsize_t)XFS_MAXIOFFSET(mp));
+	ASSERT(first_unmap_block <= last_unmap_block);
+	done = 0;
+	if (last_unmap_block == first_unmap_block) {
+		done = 1;
+	} else {
+		unmap_len = last_unmap_block - first_unmap_block;
+	}
+	while (!done) {
+		/*
+		 * Free up up to XFS_ITRUNC_MAX_EXTENTS.  xfs_bunmapi()
+		 * will tell us whether it freed the entire range or
+		 * not.  If this is a synchronous mount (wsync),
+		 * then we can tell bunmapi to keep all the
+		 * transactions asynchronous since the unlink
+		 * transaction that made this inode inactive has
+		 * already hit the disk.  There's no danger of
+		 * the freed blocks being reused, there being a
+		 * crash, and the reused blocks suddenly reappearing
+		 * in this file with garbage in them once recovery
+		 * runs.
+		 */
+		xfs_bmap_init(&free_list, &first_block);
+		error = xfs_bmap_trunc(ntp, ip,
+				    first_unmap_block, unmap_len,
+				    xfs_bmapi_aflag(fork),
+				    XFS_ITRUNC_MAX_EXTENTS,
+				    &first_block, &free_list,
+				    &done);
+		if (error) {
+			/*
+			 * If the bunmapi call encounters an error,
+			 * return to the caller where the transaction
+			 * can be properly aborted.  We just need to
+			 * make sure we're not holding any resources
+			 * that we were not when we came in.
+			 */
+			xfs_bmap_cancel(&free_list);
+			return error;
+		}
+
+		/* Code block to change unmap_len for the next iteration */
+		{
+			xfs_bmap_free_item_t* temp = NULL;
+
+			if(free_list.xbf_count > 2)
+				unmap_len += 1;
+
+			temp = free_list.xbf_first;
+			while(temp != NULL)
+			{
+				unmap_len -= temp->xbfi_blockcount;
+				temp = temp->xbfi_next;
+			}
+		}
+
+		/*
+		 * Duplicate the transaction that has the permanent
+		 * reservation and commit the old transaction.
+		 */
+		error = xfs_bmap_finish(tp, &free_list, &committed);
+		ntp = *tp;
+		if (committed)
+			xfs_trans_ijoin(ntp, ip);
+
+		if (error) {
+			/*
+			 * If the bmap finish call encounters an error, return
+			 * to the caller where the transaction can be properly
+			 * aborted.  We just need to make sure we're not
+			 * holding any resources that we were not when we came
+			 * in.
+			 *
+			 * Aborting from this point might lose some blocks in
+			 * the file system, but oh well.
+			 */
+			xfs_bmap_cancel(&free_list);
+			return error;
+		}
+
+		if (committed) {
+			/*
+			 * Mark the inode dirty so it will be logged and
+			 * moved forward in the log as part of every commit.
+			 */
+			xfs_trans_log_inode(ntp, ip, XFS_ILOG_CORE);
+		}
+
+		ntp = xfs_trans_dup(ntp);
+		error = xfs_trans_commit(*tp, 0);
+		*tp = ntp;
+
+		xfs_trans_ijoin(ntp, ip);
+
+		if (error)
+			return error;
+		/*
+		 * transaction commit worked ok so we can drop the extra ticket
+		 * reference that we gained in xfs_trans_dup()
+		 */
+		xfs_log_ticket_put(ntp->t_ticket);
+		error = xfs_trans_reserve(ntp, 0,
+					XFS_ITRUNCATE_LOG_RES(mp), 0,
+					XFS_TRANS_PERM_LOG_RES,
+					XFS_ITRUNCATE_LOG_COUNT);
+		if (error)
+			return error;
+	}
+	/*
+	 * Only update the size in the case of the data fork, but
+	 * always re-log the inode so that our permanent transaction
+	 * can keep on rolling it forward in the log.
+	 */
+	if (fork == XFS_DATA_FORK) {
+		xfs_isize_check(mp, ip, new_size);
+		/*
+		 * If we are not changing the file size then do
+		 * not update the on-disk file size - we may be
+		 * called from xfs_inactive_free_eofblocks().  If we
+		 * update the on-disk file size and then the system
+		 * crashes before the contents of the file are
+		 * flushed to disk then the files may be full of
+		 * holes (ie NULL files bug).
+		 */
+		if (ip->i_size != new_size) {
+			ip->i_d.di_size = new_size;
+			ip->i_size = new_size;
+		}
+	}
+	xfs_trans_log_inode(ntp, ip, XFS_ILOG_CORE);
+	ASSERT((new_size != 0) ||
+	       (fork == XFS_ATTR_FORK) ||
+	       (ip->i_delayed_blks == 0));
+	ASSERT((new_size != 0) ||
+	       (fork == XFS_ATTR_FORK) ||
+	       (ip->i_d.di_nextents == 0));
+	trace_xfs_itruncate_finish_end(ip, new_size);
+	return 0;
+}
+#endif
 
 /*
  * Shrink the file to the given new_size.  The new size must be smaller than
@@ -3712,7 +4217,7 @@ xfs_iext_realloc_indirect(
 /*
  * Switch from indirection array to linear (direct) extent allocations.
  */
-STATIC void
+void
 xfs_iext_indirect_to_direct(
 	 xfs_ifork_t	*ifp)		/* inode fork pointer */
 {

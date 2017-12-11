@@ -108,7 +108,11 @@ static void arm_backtrace(struct pt_regs * const regs, unsigned int depth)
 		tail = user_backtrace(tail);
 }
 
+#ifdef CONFIG_CACHE_ANALYZER
+int oprofile_arch_init(struct oprofile_operations *ops)
+#else
 int __init oprofile_arch_init(struct oprofile_operations *ops)
+#endif
 {
 	/* provide backtrace support also in timer mode: */
 	ops->backtrace		= arm_backtrace;

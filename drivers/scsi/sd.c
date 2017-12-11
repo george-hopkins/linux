@@ -44,12 +44,16 @@
 #include <linux/interrupt.h>
 #include <linux/init.h>
 #include <linux/blkdev.h>
+
 #include <linux/blkpg.h>
 #include <linux/delay.h>
 #include <linux/mutex.h>
 #include <linux/string_helpers.h>
 #include <linux/async.h>
 #include <linux/slab.h>
+#ifdef SAMSUNG_PATCH_WITH_USB_HOTPLUG_MREADER
+#include <linux/buffer_head.h>
+#endif
 #include <asm/uaccess.h>
 #include <asm/unaligned.h>
 
@@ -113,6 +117,11 @@ static void sd_print_result(struct scsi_disk *, int);
 
 static DEFINE_SPINLOCK(sd_index_lock);
 static DEFINE_IDA(sd_index_ida);
+#ifdef SAMSUNG_PATCH_WITH_USB_HOTPLUG_MREADER
+//patch JAN-26-2007
+//static DECLARE_MUTEX(sd_thread_create_sem);	//change 3.0.20 by yanuvis
+static DEFINE_SEMAPHORE(sd_thread_create_sem);
+#endif
 
 /* This semaphore is used to mediate the 0->1 reference get in the
  * face of object destruction (i.e. we can't allow a get on an
@@ -368,6 +377,10 @@ static struct class sd_disk_class = {
 	.dev_release	= scsi_disk_release,
 	.dev_attrs	= sd_disk_attrs,
 };
+
+#ifdef SAMSUNG_PATCH_WITH_USB_HOTPLUG_MREADER
+static int sd_poller_thread (void * __sdkp);
+#endif
 
 static struct scsi_driver sd_template = {
 	.owner			= THIS_MODULE,
@@ -2537,7 +2550,21 @@ static void sd_probe_async(void *data, async_cookie_t cookie)
 	add_disk(gd);
 	sd_dif_config_host(sdkp);
 
+
 	sd_revalidate_disk(gd);
+
+#ifdef SAMSUNG_PATCH_WITH_USB_HOTPLUG_MREADER
+	//need to check by kks	
+	KKS_DEBUG("kks test : %s %d\n", __FILE__,__LINE__);
+	if (sdp->removable){
+		KKS_DEBUG("kks test : %s %d\n", __FILE__,__LINE__);
+		init_completion(&sdkp->poller.done_notify);
+		//patch JAN-26-2007
+		//this lock will be up in sd_poller_thread()
+		down(&sd_thread_create_sem);
+		sdkp->poller.pid = kernel_thread(sd_poller_thread, sdkp, CLONE_VM | CLONE_FS | CLONE_FILES);	
+	}
+#endif
 
 	sd_printk(KERN_NOTICE, sdkp, "Attached SCSI %sdisk\n",
 		  sdp->removable ? "removable " : "");
@@ -2651,6 +2678,125 @@ static int sd_probe(struct device *dev)
 	return error;
 }
 
+//Newly  add
+#ifdef SAMSUNG_PATCH_WITH_USB_HOTPLUG_MREADER
+static int sd_poller_thread (void * __sdkp)
+{	
+	struct scsi_disk *sdkp =  (struct scsi_disk *)__sdkp;
+	struct block_device *bdev = NULL;
+	int retval,state=1,p;
+	struct buffer_head *bh;
+	int isNoPartition = 0;
+
+//	lock_kernel();
+	daemonize("scsi-poller");
+	allow_signal(SIGTERM);
+	current->flags |= PF_NOFREEZE;
+//	unlock_kernel();
+
+	KKS_DEBUG(KERN_DEBUG "Pollera thread started for %s, PID = %d\n",sdkp->disk->disk_name, current->pid);
+
+	//patch JAN-27-2007
+	//sd_thread_create_sem is down when sd_poller_thread created in sd_probe function
+	up(&sd_thread_create_sem);
+	KKS_DEBUG("kks test : %s %d\n", __FILE__,__LINE__);
+
+#define POLL_INTERVAL 1 //Poll interval in seconds	
+	for (;;){
+		//printk("kks test : %s %d\n", __FILE__,__LINE__);
+		if(signal_pending(current))
+		complete_and_exit(&sdkp->poller.done_notify, 0);
+
+			msleep(POLL_INTERVAL*1000);
+
+		//retval = sd_media_changed(sdkp->disk);		//change 3.0.20 by yanuvis
+		retval = sd_check_events(sdkp->disk, 0);
+		KKS_DEBUG("kks test : retval = %d, state = %d   %s %d\n", retval, state, __FILE__,__LINE__);
+		if (retval != state)
+		{
+			KKS_DEBUG("kks test : %s %d\n", __FILE__,__LINE__);
+			//Connection state changed
+			if (retval == 0){
+   				//Connected
+				KKS_DEBUG("kks test : %s %d\n", __FILE__,__LINE__);
+				bdev = bdget_disk(sdkp->disk, 0);
+				bdev->bd_disk = sdkp->disk;
+				bdev->bd_contains = bdev;
+        			if (!bdev){
+					KKS_DEBUG("kks test : %s %d\n", __FILE__,__LINE__);
+					printk(KERN_ERR "Unable to get block device pointer\n");
+					continue;
+				}
+
+				//We should rescan partitions only if they were not found
+				isNoPartition = 0;
+				//if (!sdkp->disk->part_tbl->part[0]){
+  				if (!sdkp->disk->part_tbl->part[1]){							
+ 					KKS_DEBUG("kks test : %s %d\n", __FILE__,__LINE__);
+					bh = __getblk(bdev, 0, sdkp->device->sector_size);
+					ll_rw_block(READ, 1, &bh);
+					wait_on_buffer(bh);
+
+					//2013.03.27 add mutex lock for bdev->bd_disk
+					mutex_lock(&bdev->bd_mutex);
+					//patch FEB-01-2007
+					if(bdev->bd_disk != NULL)
+					{
+						rescan_partitions(sdkp->disk, bdev);
+						KKS_DEBUG("kks test : %s %d\n", __FILE__,__LINE__);
+					}
+					mutex_unlock(&bdev->bd_mutex);
+					/* this is no partition media and check card reader */
+					//if( !sdkp->disk.part0){
+					if (!sdkp->disk->part_tbl->part[1]){						
+						KKS_DEBUG("kks test : %s %d\n", __FILE__,__LINE__);
+						printk(KERN_ERR "FIXED SELP: no partition Media Connected\n");
+						isNoPartition = 1;
+#ifdef CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_STORAGE_PARTITION_DEVICE_SUPPORT
+						if (likely(disk_to_dev(sdkp->disk) != NULL)) {
+							kobject_uevent(&disk_to_dev(sdkp->disk)->kobj, KOBJ_ADD);
+							}
+#else
+						if (likely(sdkp->disk->driverfs_dev != NULL)) {
+							kobject_uevent(&sdkp->disk->driverfs_dev->kobj, KOBJ_ADD);
+						}
+#endif						
+					}
+				}
+			}
+			//Disconnected
+			else{
+				KKS_DEBUG("kks test : %s %d\n", __FILE__,__LINE__);
+				//Let's delete partitions only if they exist
+				//if (sdkp->disk.part0){
+				if (sdkp->disk->part_tbl->part[1]){							
+					KKS_DEBUG("kks test : %s %d\n", __FILE__,__LINE__);
+					//invalidate_partition(sdkp->disk, 0);//
+					bdev->bd_invalidated = 0;
+					for (p = 1; p < sdkp->disk->minors; p++)
+					delete_partition(sdkp->disk, p);
+					//sd_revalidate_disk(sdkp->disk);//
+    				}
+				else if(isNoPartition){
+					KKS_DEBUG("kks test : %s %d\n", __FILE__,__LINE__);
+					printk(KERN_ERR "FIXED SELP: no partition Media Disconnected\n");
+					/* for no partiton device , make hotplug event */
+#ifdef CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_STORAGE_PARTITION_DEVICE_SUPPORT      
+					kobject_uevent(&disk_to_dev(sdkp->disk)->kobj, KOBJ_REMOVE);
+#else
+					//kobject_uevent(&sdkp->disk->driverfs_dev->kobj, KOBJ_REMOVE);//
+#endif
+					//invalidate_partition(sdkp->disk, 0);//
+					bdev->bd_invalidated = 0;
+					/* remove disk */
+					//sd_revalidate_disk(sdkp->disk);//
+    				}
+			}
+			state = retval;
+		}
+	}
+}
+#endif
 /**
  *	sd_remove - called whenever a scsi disk (previously recognized by
  *	sd_probe) is detached from the system. It is called (potentially
@@ -2662,6 +2808,45 @@ static int sd_probe(struct device *dev)
  *	that could be re-used by a subsequent sd_probe().
  *	This function is not called when the built-in sd driver is "exit-ed".
  **/
+#ifdef SAMSUNG_PATCH_WITH_USB_HOTPLUG_MREADER
+static int sd_remove(struct device *dev)
+{
+	struct scsi_disk *sdkp = dev_get_drvdata(dev);
+	struct scsi_device *sdp = to_scsi_device(dev);
+
+	async_synchronize_full();
+	sdkp = dev_get_drvdata(dev);
+	if(sdkp == NULL)
+		return 0;
+	sdp = to_scsi_device(dev);
+	KKS_DEBUG("kks test : %s %d\n", __FILE__,__LINE__);
+	blk_queue_prep_rq(sdkp->device->request_queue, scsi_prep_fn);
+	
+	device_del(&sdkp->dev);	
+	del_gendisk(sdkp->disk);
+		
+	if ((sdp != NULL) && (sdp->removable)){
+		//patch JAN-27-2007
+		//kill_proc should be called after thread function start
+		down(&sd_thread_create_sem);
+		KKS_DEBUG("kks test : %s %d\n", __FILE__,__LINE__);
+		//kill_proc(sdkp->poller.pid, SIGTERM, 1);
+		kill_proc_info(SIGTERM, (struct siginfo *)1 ,(pid_t)sdkp->poller.pid);
+		//patch JAN-27-2007
+		up(&sd_thread_create_sem);
+		wait_for_completion(&sdkp->poller.done_notify);
+	}
+	KKS_DEBUG("kks test : %s %d\n", __FILE__,__LINE__);
+	sd_shutdown(dev);
+	
+	mutex_lock(&sd_ref_mutex);
+	dev_set_drvdata(dev, NULL);
+        put_device(&sdkp->dev);
+        mutex_unlock(&sd_ref_mutex);
+	
+	return 0;
+}
+#else //org
 static int sd_remove(struct device *dev)
 {
 	struct scsi_disk *sdkp;
@@ -2683,6 +2868,7 @@ static int sd_remove(struct device *dev)
 
 	return 0;
 }
+#endif 
 
 /**
  *	scsi_disk_release - Called to free the scsi_disk structure

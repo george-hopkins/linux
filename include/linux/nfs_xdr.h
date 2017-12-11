@@ -132,6 +132,7 @@ struct nfs_fsstat {
 	__u64			tfiles;	/* # of files */
 	__u64			ffiles;	/* # of free files */
 	__u64			afiles;	/* # of files available to user */
+	__u32			f_type; /* Get native fs magic */
 };
 
 struct nfs2_fsstat {
@@ -721,6 +722,32 @@ struct nfs3_readdirargs {
 	struct page **		pages;
 };
 
+struct nfs3_umountargs {
+	__u32                   dummy;
+};
+
+struct nfs3_umountres {
+	__u32                   dummy;
+};
+
+struct nfs3_openargs {
+	struct nfs_fh		*fh;
+	__u32                   open_count;
+};
+
+struct nfs3_openres {
+	__u32                   open_count;
+};
+
+struct nfs3_closeargs {
+	struct nfs_fh		*fh;
+	__u32                   open_count;
+};
+
+struct nfs3_closeres {
+	__u32                   open_count;
+};
+
 struct nfs3_diropres {
 	struct nfs_fattr *	dir_attr;
 	struct nfs_fh *		fh;
@@ -1208,6 +1235,9 @@ struct nfs_rpc_ops {
 	int	(*init_client) (struct nfs_client *, const struct rpc_timeout *,
 				const char *, rpc_authflavor_t, int);
 	int	(*secinfo)(struct inode *, const struct qstr *, struct nfs4_secinfo_flavors *);
+	int     (*umount)(struct nfs_server *);
+	int     (*open)(struct inode *);
+	int     (*close)(struct inode *);
 };
 
 /*

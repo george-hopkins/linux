@@ -17,9 +17,11 @@ config USB_C67X00_HCD
 	  To compile this driver as a module, choose M here: the
 	  module will be called c67x00.
 
+if !NVT_NT72568
 config USB_XHCI_HCD
 	tristate "xHCI HCD (USB 3.0) support (EXPERIMENTAL)"
-	depends on USB && PCI && EXPERIMENTAL
+#	depends on USB && PCI && EXPERIMENTAL
+	depends on USB && EXPERIMENTAL
 	---help---
 	  The eXtensible Host Controller Interface (xHCI) is standard for USB 3.0
 	  "SuperSpeed" host controller hardware.
@@ -36,6 +38,7 @@ config USB_XHCI_HCD_DEBUGGING
 	  This should only be used for debugging xHCI driver bugs.
 
 	  If unsure, say N.
+endif
 
 config USB_EHCI_HCD
 	tristate "EHCI HCD (USB 2.0) support"
@@ -59,6 +62,8 @@ config USB_EHCI_HCD
 	  To compile this driver as a module, choose M here: the
 	  module will be called ehci-hcd.
 
+
+if !NVT_NT72568
 config USB_EHCI_ROOT_HUB_TT
 	bool "Root Hub Transaction Translators"
 	depends on USB_EHCI_HCD
@@ -90,6 +95,16 @@ config USB_EHCI_TT_NEWSCHED
 	  saying N.
 
 	  If unsure, say Y.
+endif
+
+if NVT_NT72568
+config USB_NT72568_HCD
+	bool "NT72568 USB"
+	depends on USB_EHCI_HCD
+	default y
+	help
+	  Supports the NT72568 USB host controller
+endif
 
 config USB_EHCI_HCD_PMC_MSP
 	tristate "EHCI support for on-chip PMC MSP71xx USB controller"

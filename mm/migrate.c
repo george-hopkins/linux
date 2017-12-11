@@ -159,6 +159,7 @@ static int remove_migration_pte(struct page *new, struct vm_area_struct *vma,
 		page_add_anon_rmap(new, vma, addr);
 	else
 		page_add_file_rmap(new);
+	inc_ptmu_counter(mm, vma, new, addr, 1);
 
 	/* No need to invalidate - it was non-present before */
 	update_mmu_cache(vma, addr, ptep);
@@ -236,8 +237,12 @@ static int migrate_page_move_mapping(struct address_space *mapping,
 
 	if (!mapping) {
 		/* Anonymous page without mapping */
-		if (page_count(page) != 1)
+		if (page_count(page) != 1) {
+#ifdef CONFIG_CMA_DEBUG
+			printk(KERN_ALERT "Invalid count on anon unmapped page %p = %d\n", page, page_count(page));
+#endif
 			return -EAGAIN;
+		}
 		return 0;
 	}
 
@@ -250,11 +255,17 @@ static int migrate_page_move_mapping(struct address_space *mapping,
 	if (page_count(page) != expected_count ||
 		radix_tree_deref_slot_protected(pslot, &mapping->tree_lock) != page) {
 		spin_unlock_irq(&mapping->tree_lock);
+#ifdef CONFIG_CMA_DEBUG
+		printk(KERN_ALERT "Invalid count on anon mapped page %p = %d, expected %d\n", page, page_count(page), expected_count);
+#endif
 		return -EAGAIN;
 	}
 
 	if (!page_freeze_refs(page, expected_count)) {
 		spin_unlock_irq(&mapping->tree_lock);
+#ifdef CONFIG_CMA_DEBUG
+		printk(KERN_ALERT "page_freeze_refs(%p) failed\n", page);
+#endif
 		return -EAGAIN;
 	}
 
@@ -651,8 +662,12 @@ static int unmap_and_move(new_page_t get_new_page, unsigned long private,
 	rc = -EAGAIN;
 
 	if (!trylock_page(page)) {
-		if (!force || !sync)
+		if (!force || !sync) {
+#ifdef CONFIG_CMA_DEBUG
+			printk(KERN_ALERT "Page %p was already locked, force %d sync %d!\n", page, force, sync);
+#endif
 			goto move_newpage;
+		}
 
 		/*
 		 * It's not safe for direct compaction to call lock_page.
@@ -667,8 +682,12 @@ static int unmap_and_move(new_page_t get_new_page, unsigned long private,
 		 * avoid the use of lock_page for direct compaction
 		 * altogether.
 		 */
-		if (current->flags & PF_MEMALLOC)
+		if (current->flags & PF_MEMALLOC) {
+#ifdef CONFIG_CMA_DEBUG
+			printk(KERN_ALERT "Task %p <%s> is in PF_MEMALLOC\n", current, current->comm);
+#endif
 			goto move_newpage;
+		}
 
 		lock_page(page);
 	}
@@ -704,8 +723,12 @@ static int unmap_and_move(new_page_t get_new_page, unsigned long private,
 			rc = -EBUSY;
 			goto uncharge;
 		}
-		if (!force)
+		if (!force) {
+#ifdef CONFIG_CMA_DEBUG
+			printk(KERN_ALERT "Page %p is under writeback, force %d\n", page, force);
+#endif
 			goto uncharge;
+		}
 		wait_on_page_writeback(page);
 	}
 	/*
@@ -741,6 +764,9 @@ static int unmap_and_move(new_page_t get_new_page, unsigned long private,
 			 */
 			remap_swapcache = 0;
 		} else {
+#ifdef CONFIG_CMA_DEBUG
+			printk(KERN_ALERT "No anon_vma for page %p\n", page);
+#endif
 			goto uncharge;
 		}
 	}
@@ -761,6 +787,9 @@ static int unmap_and_move(new_page_t get_new_page, unsigned long private,
 		VM_BUG_ON(PageAnon(page));
 		if (page_has_private(page)) {
 			try_to_free_buffers(page);
+#ifdef CONFIG_CMA_DEBUG
+			printk(KERN_ALERT "Orphaned FS-private page %p\n", page);
+#endif
 			goto uncharge;
 		}
 		goto skip_unmap;
@@ -770,8 +799,17 @@ static int unmap_and_move(new_page_t get_new_page, unsigned long private,
 	try_to_unmap(page, TTU_MIGRATION|TTU_IGNORE_MLOCK|TTU_IGNORE_ACCESS);
 
 skip_unmap:
-	if (!page_mapped(page))
+	if (!page_mapped(page)) {
 		rc = move_to_new_page(newpage, page, remap_swapcache, sync);
+#ifdef CONFIG_CMA_DEBUG
+		if (rc)
+			printk(KERN_ALERT "move_to_new_page(%p) returned %d\n", page, rc);
+#endif
+	}
+#ifdef CONFIG_CMA_DEBUG
+	else
+		printk(KERN_ALERT "Page %p is not mapped, returning %d\n", page, rc);
+#endif
 
 	if (rc && remap_swapcache)
 		remove_migration_ptes(page, page);
@@ -930,11 +968,17 @@ int migrate_pages(struct list_head *from,
 				goto out;
 			case -EAGAIN:
 				retry++;
+#ifdef CONFIG_CMA_DEBUG
+				dump_page(page);
+#endif
 				break;
 			case 0:
 				break;
 			default:
 				/* Permanent failure */
+#ifdef CONFIG_CMA_DEBUG
+				dump_page(page);
+#endif
 				nr_failed++;
 				break;
 			}
@@ -948,6 +992,9 @@ out:
 	if (rc)
 		return rc;
 
+#ifdef CONFIG_CMA_DEBUG
+	printk("   4. %s(nr_failed : %d, retry : %d)\n",__func__,nr_failed, retry);
+#endif
 	return nr_failed + retry;
 }
 
@@ -1037,6 +1084,9 @@ static int do_move_page_to_node_array(struct mm_struct *mm,
 	struct page_to_node *pp;
 	LIST_HEAD(pagelist);
 
+#ifdef CONFIG_CMA
+	mutex_lock(&migrate_lock);
+#endif
 	down_read(&mm->mmap_sem);
 
 	/*
@@ -1105,6 +1155,9 @@ set_status:
 	}
 
 	up_read(&mm->mmap_sem);
+#ifdef CONFIG_CMA
+	mutex_unlock(&migrate_lock);
+#endif
 	return err;
 }
 

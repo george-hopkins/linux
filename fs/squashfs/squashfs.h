@@ -26,14 +26,41 @@
 #define ERROR(s, args...)	pr_err("SQUASHFS error: "s, ## args)
 
 #define WARNING(s, args...)	pr_warning("SQUASHFS: "s, ## args)
+#if defined (CONFIG_SQUASHFS_INCL_BIO)
+/* MAX_PAGES_PER_BLOCK_REQ :
+ * in linux 3.0.20: max request length is 512 sectors.
+ * since a sector is 512 bytes that means 512 * 512 = 262144 bytes per request.
+ * in terms of pages that is (262144/4096) = 64 pages
+ *
+ * this also means that in a single bio we can carry only this much number of pages.
+ */
+#define  MAX_PAGES_PER_BLOCK_REQ 64
+#endif
+
 
 /* block.c */
-extern int squashfs_read_data(struct super_block *, void **, u64, int, u64 *,
-				int, int);
+#ifdef CONFIG_GZMANAGER_DECOMPRESS
+#ifdef CONFIG_SQUASHFS_INCL_BIO
+extern int squashfs_read_data(struct super_block *, void **, void **, u64, int, u64 *,
+                                int, int); 
+extern int sw_decompress(char *, int ,char **,int);
+#else
+extern int squashfs_read_data(struct super_block *, void **, char *, u64, 
+				int, u64 *, int, int);
+#endif
+#else
+extern int squashfs_read_data(struct super_block *, void **, u64, 
+				int, u64 *, int, int);
+#endif
 
 /* cache.c */
+#ifdef CONFIG_SQUASHFS_GZIP_LINEAR_MEM
+extern struct squashfs_cache *squashfs_cache_init(char *, int, int, int);
+extern void squashfs_cache_delete(struct squashfs_cache *,int);
+#else
 extern struct squashfs_cache *squashfs_cache_init(char *, int, int);
 extern void squashfs_cache_delete(struct squashfs_cache *);
+#endif
 extern struct squashfs_cache_entry *squashfs_cache_get(struct super_block *,
 				struct squashfs_cache *, u64, int);
 extern void squashfs_cache_put(struct squashfs_cache_entry *);

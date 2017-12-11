@@ -755,6 +755,8 @@ static irqreturn_t ohci_irq (struct usb_hcd *hcd)
 	 * optimization of checking the LSB of hcca->done_head; it doesn't
 	 * work on all systems (edge triggering for OHCI can be a factor).
 	 */
+
+	udelay(2);// FoxB: 2us for usb to serial
 	ints = ohci_readl(ohci, &regs->intrstatus);
 
 	/* Check for an all 1's result which is a typical consequence
@@ -993,6 +995,11 @@ MODULE_LICENSE ("GPL");
 #ifdef CONFIG_PCI
 #include "ohci-pci.c"
 #define PCI_DRIVER		ohci_pci_driver
+#endif
+
+#if defined(CONFIG_ARCH_CCEP)
+#include "ohci-sdp.c"
+#define PLATFORM_DRIVER		ohci_sdp_driver
 #endif
 
 #if defined(CONFIG_ARCH_SA1100) && defined(CONFIG_SA1111)

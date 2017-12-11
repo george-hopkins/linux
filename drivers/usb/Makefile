@@ -4,10 +4,13 @@
 
 # Object files in subdirectories
 
+ifndef CONFIG_MSTAR_CHIP
 obj-$(CONFIG_USB)		+= core/
+endif
 
 obj-$(CONFIG_USB_MON)		+= mon/
 
+ifndef CONFIG_MSTAR_CHIP
 obj-$(CONFIG_PCI)		+= host/
 obj-$(CONFIG_USB_EHCI_HCD)	+= host/
 obj-$(CONFIG_USB_ISP116X_HCD)	+= host/
@@ -23,6 +26,7 @@ obj-$(CONFIG_USB_HWA_HCD)	+= host/
 obj-$(CONFIG_USB_ISP1760_HCD)	+= host/
 obj-$(CONFIG_USB_IMX21_HCD)	+= host/
 obj-$(CONFIG_USB_FSL_MPH_DR_OF)	+= host/
+endif
 
 obj-$(CONFIG_USB_C67X00_HCD)	+= c67x00/
 
@@ -33,8 +37,10 @@ obj-$(CONFIG_USB_PRINTER)	+= class/
 obj-$(CONFIG_USB_WDM)		+= class/
 obj-$(CONFIG_USB_TMC)		+= class/
 
+ifndef CONFIG_MSTAR_CHIP
 obj-$(CONFIG_USB_STORAGE)	+= storage/
 obj-$(CONFIG_USB)		+= storage/
+endif
 
 obj-$(CONFIG_USB_MDC800)	+= image/
 obj-$(CONFIG_USB_MICROTEK)	+= image/

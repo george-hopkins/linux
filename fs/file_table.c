@@ -135,6 +135,9 @@ struct file *get_empty_filp(void)
 	spin_lock_init(&f->f_lock);
 	eventpoll_init_file(f);
 	/* f->f_version: 0 */
+#ifdef CONFIG_FD_PID
+	f->pid = current->pid;
+#endif
 	return f;
 
 over:
@@ -533,6 +536,70 @@ retry:
 	} while_file_list_for_each_entry;
 	lg_global_unlock(files_lglock);
 }
+
+#if CONFIG_FCOUNT_DEBUG
+void check_files_count(struct super_block *sb, struct vfsmount *mnt)
+{
+	struct file *f;
+	char path_buf[100];
+	struct vfsmount *tmp;
+	struct path mnt_path;
+	char *ret;
+
+#ifdef CONFIG_FD_PID
+	struct task_struct *p;
+#endif
+
+	lg_global_lock(files_lglock);
+	printk( KERN_ALERT "====================================================================\n");
+	printk( KERN_ALERT "Mount Point : %s\n", mnt->mnt_mountpoint->d_name.name);
+	printk( KERN_ALERT "File Name(File Count) - Task(optional - CONFIG_FD_PID)\n");
+	printk( KERN_ALERT "--------------------------------------------------------------------\n");
+	do_file_list_for_each_entry(sb, f) {
+#ifdef CONFIG_FD_PID
+		p = find_task_by_vpid(f->pid);
+		if( p )
+			printk( KERN_ALERT "* %s(%ld) - %s\n", (f->f_path).dentry->d_name.name, atomic_long_read(&(f)->f_count), p->comm);
+		else
+			printk( KERN_ALERT "* %s(%ld) - Task struct is not available\n", (f->f_path).dentry->d_name.name, atomic_long_read(&(f)->f_count));
+#else
+		printk( KERN_ALERT "* %s(%ld)\n", (f->f_path).dentry->d_name.name, atomic_long_read(&(f)->f_count));
+#endif
+	} while_file_list_for_each_entry;
+	printk( KERN_ALERT "====================================================================\n");
+	lg_global_unlock(files_lglock);
+
+	//br_read_lock(vfsmount_lock);
+	printk( KERN_ALERT "Current Mount Info\n");
+	printk( KERN_ALERT "--------------------------------------------------------------------\n");
+	mnt_path.dentry = mnt->mnt_root;
+	mnt_path.mnt = mnt;
+
+	ret = d_path ( &mnt_path, path_buf, 100 );
+	if( !IS_ERR(ret) )
+		printk("devname : %s \t\tpath : %s \n", mnt->mnt_devname, ret );
+	else
+		printk("devname : %s \t\tpath : ERROR(d_path error) \n", tmp->mnt_devname );
+
+	list_for_each_entry(tmp, &mnt->mnt_list, mnt_list) 
+	{
+		if( tmp->mnt_devname && tmp->mnt_mountpoint && tmp->mnt_mountpoint->d_name.name )
+		{
+			mnt_path.dentry = tmp->mnt_root;
+			mnt_path.mnt = tmp;
+		
+			ret = d_path ( &mnt_path, path_buf, 100 );
+			if( !IS_ERR(ret) )
+				printk("devname : %s \t\tpath : %s \n", tmp->mnt_devname, ret );
+			else
+				printk("devname : %s \\ttpath : ERROR(d_path error) \n", tmp->mnt_devname );
+		}
+	}
+	printk( KERN_ALERT "====================================================================\n");
+	//br_read_unlock(vfsmount_lock);
+}
+EXPORT_SYMBOL(check_files_count);
+#endif
 
 void __init files_init(unsigned long mempages)
 { 

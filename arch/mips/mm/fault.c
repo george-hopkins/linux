@@ -28,6 +28,12 @@
 #include <asm/highmem.h>		/* For VMALLOC_END */
 #include <linux/kdebug.h>
 
+#ifdef CONFIG_SUPPORT_REBOOT
+extern int micom_reboot( void );
+extern int reboot_permit(void);
+extern int print_permit(void);
+#endif
+
 /*
  * This routine handles page faults.  It determines the address,
  * and the problem, and then passes it off to one of the appropriate
@@ -187,6 +193,32 @@ bad_area_nosemaphore:
 		       field, (unsigned long) regs->cp0_epc,
 		       field, (unsigned long) regs->regs[31]);
 #endif
+
+#ifdef CONFIG_SUPPORT_REBOOT
+	if( !print_permit() && reboot_permit() )
+	{
+		micom_reboot();
+		while(1);
+	}
+#endif
+
+
+		/* VDLinux, based VDLP.Mstar default patch No.5,show fault user stack, 2010-01-29 */
+#ifdef CONFIG_SHOW_FAULT_TRACE_INFO
+		{
+			printk(KERN_ALERT "%s() : sending SIGSEGV to %s, PID:%d\n",__func__, current->comm, current->pid);
+			show_info(current, regs);
+		}
+#endif
+
+#ifdef CONFIG_SUPPORT_REBOOT
+			if( reboot_permit() )
+			{
+				micom_reboot();
+				while(1);
+			}
+#endif
+
 		info.si_signo = SIGSEGV;
 		info.si_errno = 0;
 		/* info.si_code has been set above */
@@ -243,6 +275,15 @@ do_sigbus:
 		       field, (unsigned long) regs->cp0_epc,
 		       field, (unsigned long) regs->regs[31]);
 #endif
+
+	/* VDLinux, based VDLP.Mstar default patch No.5,show fault user stack, 2010-01-29 */
+#ifdef CONFIG_SHOW_FAULT_TRACE_INFO
+	{
+		printk(KERN_ALERT "%s() : sending SIGBUS to %s, PID:%d\n",__func__, current->comm, current->pid);
+		show_info(current, regs);
+	}
+#endif
+
 	tsk->thread.cp0_badvaddr = address;
 	info.si_signo = SIGBUS;
 	info.si_errno = 0;

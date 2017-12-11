@@ -118,6 +118,33 @@ struct mips_pmu {
 
 static const struct mips_pmu *mipspmu;
 
+#ifdef CONFIG_CACHE_ANALYZER
+/* mips doesn't support id */
+char *op_name_from_perf_id(void)
+{
+	if (!mipspmu)
+		return NULL;
+
+	return (char *)mipspmu->name;
+}
+
+int mipspmu_get_max_events(void)
+{
+	int max_events = 0;
+
+	if (mipspmu != NULL)
+		max_events = mipspmu->num_counters;
+
+	return max_events;
+}
+
+int perf_num_counters(void)
+{
+	return mipspmu_get_max_events();
+}
+EXPORT_SYMBOL_GPL(perf_num_counters);
+#endif
+
 static int
 mipspmu_event_set_period(struct perf_event *event,
 			struct hw_perf_event *hwc,

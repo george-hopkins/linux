@@ -178,6 +178,9 @@ typedef int (*ext_prepare_callback)(struct inode *, ext4_lblk_t,
 #define EXT_MAX_INDEX(__hdr__) \
 	(EXT_FIRST_INDEX((__hdr__)) + le16_to_cpu((__hdr__)->eh_max) - 1)
 
+#define EXTENT_START_FLAG	0x1
+#define INDEX_START_FLAG	0x2
+
 static inline struct ext4_extent_header *ext_inode_hdr(struct inode *inode)
 {
 	return (struct ext4_extent_header *) EXT4_I(inode)->i_data;
@@ -290,5 +293,9 @@ extern struct ext4_ext_path *ext4_ext_find_extent(struct inode *, ext4_lblk_t,
 							struct ext4_ext_path *);
 extern void ext4_ext_drop_refs(struct ext4_ext_path *);
 extern int ext4_ext_check_inode(struct inode *inode);
+extern int ext4_split_move_extents(struct inode *isrc, __u64 offset_block,
+							 struct inode *idest);
+extern int get_ext_path(struct inode *inode, ext4_lblk_t lblock,
+					struct ext4_ext_path **path);
 #endif /* _EXT4_EXTENTS */
 

@@ -181,7 +181,11 @@ int drm_stub_open(struct inode *inode, struct file *filp)
 		goto out;
 
 	old_fops = filp->f_op;
+#if defined(CONFIG_ARCH_SDP1202) || defined(CONFIG_ARCH_MSTAR)
+	filp->f_op = fops_get(dev->driver->fops);
+#else     //FoxB
 	filp->f_op = fops_get(&dev->driver->fops);
+#endif
 	if (filp->f_op == NULL) {
 		filp->f_op = old_fops;
 		goto out;
@@ -263,6 +267,11 @@ static int drm_open_helper(struct inode *inode, struct file *filp,
 
 	if (dev->driver->driver_features & DRIVER_GEM)
 		drm_gem_open(dev, priv);
+
+	if (drm_core_check_feature(dev, DRIVER_PRIME))
+	{
+		drm_prime_init_file_private(&priv->prime);
+	}
 
 	if (dev->driver->open) {
 		ret = dev->driver->open(dev, priv);
@@ -564,6 +573,10 @@ int drm_release(struct inode *inode, struct file *filp)
 
 	if (dev->driver->postclose)
 		dev->driver->postclose(dev, file_priv);
+
+	if (drm_core_check_feature(dev, DRIVER_PRIME))
+		drm_prime_destroy_file_private(&file_priv->prime);
+
 	kfree(file_priv);
 
 	/* ========================================================

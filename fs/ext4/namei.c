@@ -570,7 +570,7 @@ static int htree_dirblock_to_tree(struct file *dir_file,
 {
 	struct buffer_head *bh;
 	struct ext4_dir_entry_2 *de, *top;
-	int err, count = 0;
+	int err = 0, count = 0;
 
 	dxtrace(printk(KERN_INFO "In htree dirblock_to_tree: block %lu\n",
 							(unsigned long)block));
@@ -788,13 +788,16 @@ static void ext4_update_dx_flag(struct inode *inode)
  * `de != NULL' is guaranteed by caller.
  */
 static inline int ext4_match (int len, const char * const name,
-			      struct ext4_dir_entry_2 * de)
+			      struct ext4_dir_entry_2 *de, bool is_case)
 {
 	if (len != de->name_len)
 		return 0;
 	if (!de->inode)
 		return 0;
-	return !memcmp(name, de->name, len);
+	if (is_case)
+		return !strnicmp(name, de->name, len);
+	else
+		return !memcmp(name, de->name, len);
 }
 
 /*
@@ -811,7 +814,9 @@ static inline int search_dirblock(struct buffer_head *bh,
 	int de_len;
 	const char *name = d_name->name;
 	int namelen = d_name->len;
-
+	
+	struct ext4_sb_info *sbi = dir->i_sb->s_fs_info;
+	bool is_case_insensitive = sbi->is_case_insensitive;
 	de = (struct ext4_dir_entry_2 *) bh->b_data;
 	dlimit = bh->b_data + dir->i_sb->s_blocksize;
 	while ((char *) de < dlimit) {
@@ -819,7 +824,7 @@ static inline int search_dirblock(struct buffer_head *bh,
 		/* do minimal checking `by hand' */
 
 		if ((char *) de + namelen <= dlimit &&
-		    ext4_match (namelen, name, de)) {
+		    ext4_match (namelen, name, de, is_case_insensitive)) {
 			/* found a match - just to be sure, do a full check */
 			if (ext4_check_dir_entry(dir, NULL, de, bh, offset))
 				return -1;
@@ -1034,6 +1039,12 @@ static struct dentry *ext4_lookup(struct inode *dir, struct dentry *dentry, stru
 		brelse(bh);
 		if (!ext4_valid_inum(dir->i_sb, ino)) {
 			EXT4_ERROR_INODE(dir, "bad inode number: %u", ino);
+			return ERR_PTR(-EIO);
+		}
+		if (unlikely(ino == dir->i_ino)) {
+			EXT4_ERROR_INODE(dir, "'%.*s' linked to parent dir",
+					 dentry->d_name.len,
+					 dentry->d_name.name);
 			return ERR_PTR(-EIO);
 		}
 		inode = ext4_iget(dir->i_sb, ino);
@@ -1264,6 +1275,13 @@ static int add_dirent_to_buf(handle_t *handle, struct dentry *dentry,
 	unsigned short	reclen;
 	int		nlen, rlen, err;
 	char		*top;
+	struct ext4_sb_info *sbi = NULL;
+	bool is_case_insensitive = 0;
+	
+	if(inode) {
+		sbi = EXT4_SB(inode->i_sb);
+		is_case_insensitive = sbi->is_case_insensitive;
+	}
 
 	reclen = EXT4_DIR_REC_LEN(namelen);
 	if (!de) {
@@ -1272,7 +1290,7 @@ static int add_dirent_to_buf(handle_t *handle, struct dentry *dentry,
 		while ((char *) de <= top) {
 			if (ext4_check_dir_entry(dir, NULL, de, bh, offset))
 				return -EIO;
-			if (ext4_match(namelen, name, de))
+			if (ext4_match(namelen, name, de, is_case_insensitive))
 				return -EEXIST;
 			nlen = EXT4_DIR_REC_LEN(de->name_len);
 			rlen = ext4_rec_len_from_disk(de->rec_len, blocksize);
@@ -1722,8 +1740,8 @@ static int ext4_add_nondir(handle_t *handle,
 	int err = ext4_add_entry(handle, dentry, inode);
 	if (!err) {
 		ext4_mark_inode_dirty(handle, inode);
-		d_instantiate(dentry, inode);
 		unlock_new_inode(inode);
+		d_instantiate(dentry, inode);
 		return 0;
 	}
 	drop_nlink(inode);
@@ -1885,8 +1903,8 @@ out_clear_inode:
 	err = ext4_mark_inode_dirty(handle, dir);
 	if (err)
 		goto out_clear_inode;
-	d_instantiate(dentry, inode);
 	unlock_new_inode(inode);
+	d_instantiate(dentry, inode);
 out_stop:
 	brelse(dir_block);
 	ext4_journal_stop(handle);

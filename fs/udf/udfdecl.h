@@ -108,6 +108,10 @@ struct extent_position {
 	struct buffer_head *bh;
 	uint32_t offset;
 	struct kernel_lb_addr block;
+#ifdef CONFIG_SSIF_EXT_CACHE
+	int plus_offset;
+	int blk;
+#endif
 };
 
 /* super.c */
@@ -126,6 +130,9 @@ static inline void udf_updated_lvid(struct super_block *sb)
 	UDF_SB(sb)->s_lvid_dirty = 1;
 }
 extern u64 lvid_get_unique_id(struct super_block *sb);
+
+struct inode *udf_find_metadata_inode_efe(struct super_block *sb,
+			u32 meta_file_loc, u32 partition_num);
 
 /* namei.c */
 extern int udf_write_fi(struct inode *inode, struct fileIdentDesc *,

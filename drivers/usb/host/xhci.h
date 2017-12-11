@@ -1070,6 +1070,11 @@ union xhci_trb {
 #define TRB_MFINDEX_WRAP	39
 /* TRB IDs 40-47 reserved, 48-63 is vendor-defined */
 
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX
+#define TRB_TYPE_LINK_LE32(x)   (((x) & cpu_to_le32(TRB_TYPE_BITMASK)) == \
+	cpu_to_le32(TRB_TYPE(TRB_LINK)))
+#endif
+
 /* Nec vendor-specific command completion event. */
 #define	TRB_NEC_CMD_COMP	48
 /* Get NEC firmware revision. */
@@ -1111,14 +1116,40 @@ struct xhci_td {
 	union xhci_trb		*last_trb;
 };
 
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX
+/* xHCI command default timeout value */
+#define XHCI_CMD_DEFAULT_TIMEOUT       (5 * HZ)
+/* command descriptor */
+struct xhci_cd {
+	struct list_head	cancel_cmd_list;
+	struct xhci_command	*command;
+	union xhci_trb		*cmd_trb;
+};
+#endif 
+
 struct xhci_dequeue_state {
 	struct xhci_segment *new_deq_seg;
 	union xhci_trb *new_deq_ptr;
 	int new_cycle_state;
 };
 
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_ADD_DYNAMIC_RING_BUFFER
+enum xhci_ring_type {
+	TYPE_CTRL = 0,
+	TYPE_ISOC,
+	TYPE_BULK,
+	TYPE_INTR,
+	TYPE_STREAM,
+	TYPE_COMMAND,
+	TYPE_EVENT,
+};
+#endif
+
 struct xhci_ring {
 	struct xhci_segment	*first_seg;
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_ADD_DYNAMIC_RING_BUFFER
+	struct xhci_segment	*last_seg;
+#endif
 	union  xhci_trb		*enqueue;
 	struct xhci_segment	*enq_seg;
 	unsigned int		enq_updates;
@@ -1133,6 +1164,12 @@ struct xhci_ring {
 	 */
 	u32			cycle_state;
 	unsigned int		stream_id;
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_ADD_DYNAMIC_RING_BUFFER
+	unsigned int		num_segs;
+	unsigned int		num_trbs_free;
+	unsigned int		num_trbs_free_temp;
+	enum xhci_ring_type	type;
+#endif
 	bool			last_td_was_short;
 };
 
@@ -1252,6 +1289,13 @@ struct xhci_hcd {
 	/* data structures */
 	struct xhci_device_context_array *dcbaa;
 	struct xhci_ring	*cmd_ring;
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX 
+	unsigned int    cmd_ring_state;
+#define CMD_RING_STATE_RUNNING         (1 << 0)
+#define CMD_RING_STATE_ABORTED         (1 << 1)
+#define CMD_RING_STATE_STOPPED         (1 << 2)
+	struct list_head	cancel_cmd_list;
+#endif
 	unsigned int		cmd_ring_reserved_trbs;
 	struct xhci_ring	*event_ring;
 	struct xhci_erst	erst;
@@ -1358,15 +1402,27 @@ static inline struct usb_hcd *xhci_to_hcd(struct xhci_hcd *xhci)
 
 /* TODO: copied from ehci.h - can be refactored? */
 /* xHCI spec says all registers are little endian */
+#ifdef CONFIG_ARCH_CCEP
+extern unsigned int sdp_revision_id;
+#endif
 static inline unsigned int xhci_readl(const struct xhci_hcd *xhci,
 		__le32 __iomem *regs)
 {
+#ifdef CONFIG_ARCH_CCEP
+	if (!sdp_revision_id)
+		rmb();
+#endif
 	return readl(regs);
 }
+
 static inline void xhci_writel(struct xhci_hcd *xhci,
 		const unsigned int val, __le32 __iomem *regs)
 {
 	writel(val, regs);
+#ifdef CONFIG_ARCH_CCEP
+	if (!sdp_revision_id)
+		wmb();
+#endif
 }
 
 /*
@@ -1447,6 +1503,10 @@ int xhci_endpoint_init(struct xhci_hcd *xhci, struct xhci_virt_device *virt_dev,
 		struct usb_device *udev, struct usb_host_endpoint *ep,
 		gfp_t mem_flags);
 void xhci_ring_free(struct xhci_hcd *xhci, struct xhci_ring *ring);
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_ADD_DYNAMIC_RING_BUFFER
+int xhci_ring_expansion(struct xhci_hcd *xhci, struct xhci_ring *ring,
+				unsigned int num_trbs, gfp_t flags);
+#endif
 void xhci_free_or_cache_endpoint_ring(struct xhci_hcd *xhci,
 		struct xhci_virt_device *virt_dev,
 		unsigned int ep_index);
@@ -1477,13 +1537,21 @@ void xhci_urb_free_priv(struct xhci_hcd *xhci, struct urb_priv *urb_priv);
 void xhci_free_command(struct xhci_hcd *xhci,
 		struct xhci_command *command);
 
-#ifdef CONFIG_PCI
+#ifdef CONFIG_ARCH_CCEP
+/* xHCI SDP glue */
+int xhci_register(void);
+void xhci_unregister(void);
+#elif defined(CONFIG_PCI)
 /* xHCI PCI glue */
 int xhci_register_pci(void);
 void xhci_unregister_pci(void);
 #endif
 
 /* xHCI host controller glue */
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX 
+int handshake(struct xhci_hcd *xhci, void __iomem *ptr,
+	u32 mask, u32 done, int usec);
+#endif
 void xhci_quiesce(struct xhci_hcd *xhci);
 int xhci_halt(struct xhci_hcd *xhci);
 int xhci_reset(struct xhci_hcd *xhci);
@@ -1566,6 +1634,10 @@ void xhci_queue_config_ep_quirk(struct xhci_hcd *xhci,
 		unsigned int slot_id, unsigned int ep_index,
 		struct xhci_dequeue_state *deq_state);
 void xhci_stop_endpoint_command_watchdog(unsigned long arg);
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX 
+int xhci_cancel_cmd(struct xhci_hcd *xhci, struct xhci_command *command,
+		union xhci_trb *cmd_trb);
+#endif
 void xhci_ring_ep_doorbell(struct xhci_hcd *xhci, unsigned int slot_id,
 		unsigned int ep_index, unsigned int stream_id);
 

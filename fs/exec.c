@@ -61,6 +61,8 @@
 #include <asm/tlb.h>
 #include "internal.h"
 
+#include <linux/delay.h>
+
 int core_uses_pid;
 char core_pattern[CORENAME_MAX_SIZE] = "core";
 unsigned int core_pipe_limit;
@@ -1065,6 +1067,12 @@ void set_task_comm(struct task_struct *tsk, char *buf)
 	memset(tsk->comm, 0, TASK_COMM_LEN);
 	wmb();
 	strlcpy(tsk->comm, buf, sizeof(tsk->comm));
+#ifdef CONFIG_PTMU_TRACE
+	if(tsk->pp_usage) {
+		strlcpy(tsk->pp_usage->comm, tsk->comm, sizeof(tsk->comm));
+		set_usage_trace_enable(tsk->pp_usage);
+	}
+#endif
 	task_unlock(tsk);
 	perf_event_comm(tsk);
 }
@@ -1422,6 +1430,25 @@ int search_binary_handler(struct linux_binprm *bprm,struct pt_regs *regs)
 
 EXPORT_SYMBOL(search_binary_handler);
 
+#ifdef CONFIG_USE_ARS
+///////////////////////////////// MODIFY BY LKH (From here)  ////////////////////////////////////////
+/*
+int verify_exec_dummy(const char * filename,
+        struct user_arg_ptr argv,
+        struct user_arg_ptr envp,
+        struct pt_regs * regs)
+{
+	printk("verify_exec_dummy called\n");
+	return 0;
+}
+*/
+bool exist_exec_verify_module = false;
+int (*verify_exec)(char*, struct user_arg_ptr , struct user_arg_ptr , struct pt_regs *, rwlock_t * const tasklist_lock) = NULL;
+
+EXPORT_SYMBOL(exist_exec_verify_module);
+EXPORT_SYMBOL(verify_exec);
+//////////////////////////////////// (End) ///////////////////////////////////////////////////////
+#endif // CONFIG_USE_ARS
 /*
  * sys_execve() executes a new program.
  */
@@ -1435,6 +1462,23 @@ static int do_execve_common(const char *filename,
 	struct files_struct *displaced;
 	bool clear_in_exec;
 	int retval;
+
+#ifdef CONFIG_USE_ARS
+	if(__builtin_expect(exist_exec_verify_module, true))
+	{
+		//printk("Exec Verify Module is exist\n");
+		if(verify_exec != NULL)
+		{
+			retval = verify_exec(filename, argv, envp, regs, &tasklist_lock);  
+			if(retval)
+				goto out_ret;
+		}
+	}
+	else
+	{
+		//printk("Exec Verify Module is *NOT* exist\n");
+	}
+#endif // CONFIG_USE_ARS
 
 	retval = unshare_files(&displaced);
 	if (retval)
@@ -1854,6 +1898,13 @@ done:
 	return nr;
 }
 
+#ifdef CONFIG_ACCURATE_COREDUMP
+static void* early_core_state_alloc(void);
+static void early_core_state_free(void *);
+void block_other_cpus_on_core_dump(void);
+void unblock_other_cpus_on_core_dump(void);
+#endif
+
 static int coredump_wait(int exit_code, struct core_state *core_state)
 {
 	struct task_struct *tsk = current;
@@ -1866,8 +1917,14 @@ static int coredump_wait(int exit_code, struct core_state *core_state)
 	core_state->dumper.next = NULL;
 
 	down_write(&mm->mmap_sem);
+#ifdef CONFIG_ACCURATE_COREDUMP
+	block_other_cpus_on_core_dump();
+#endif
 	if (!mm->core_state)
 		core_waiters = zap_threads(tsk, mm, core_state, exit_code);
+#ifdef CONFIG_ACCURATE_COREDUMP
+	unblock_other_cpus_on_core_dump();
+#endif
 	up_write(&mm->mmap_sem);
 
 	if (unlikely(core_waiters < 0))
@@ -1884,7 +1941,20 @@ static int coredump_wait(int exit_code, struct core_state *core_state)
 	}
 
 	if (core_waiters)
+#ifdef CONFIG_BINFMT_ELF_COMP
+	{
+		/* Wait for 10 seconds. If all the rest of the threads do not
+		 * respond to the SIGKILL signal, then proceed to create the coredump
+		 * file with limited thread information. */
+		if (!wait_for_completion_timeout(&core_state->startup, 10*HZ))
+			printk(KERN_ALERT "[VDLP COREDUMP STEPS] 50 : Exitting "
+					  "wait_for_completion_timeout after 10 "
+					  "seconds as one of the threads did not respond to SIGKILL."
+					  "Proceeding to create coredump file with limited thread information.\n");
+	}
+#else
 		wait_for_completion(&core_state->startup);
+#endif
 fail:
 	return core_waiters;
 }
@@ -1894,20 +1964,33 @@ static void coredump_finish(struct mm_struct *mm)
 	struct core_thread *curr, *next;
 	struct task_struct *task;
 
-	next = mm->core_state->dumper.next;
-	while ((curr = next) != NULL) {
-		next = curr->next;
-		task = curr->task;
-		/*
-		 * see exit_mm(), curr->task must not see
-		 * ->task == NULL before we read ->next.
-		 */
-		smp_mb();
-		curr->task = NULL;
-		wake_up_process(task);
-	}
+	if (likely(mm->core_state)) {
+		next = mm->core_state->dumper.next;
+		while ((curr = next) != NULL) {
+			next = curr->next;
+			task = curr->task;
+			/*
+			 * see exit_mm(), curr->task must not see
+			 * ->task == NULL before we read ->next.
+			 */
+			smp_mb();
+			curr->task = NULL;
+			wake_up_process(task);
+		}
 
-	mm->core_state = NULL;
+#ifdef CONFIG_ACCURATE_COREDUMP
+		early_core_state_free(mm->core_state);
+#endif
+
+		mm->core_state = NULL;
+
+		printk(KERN_ALERT "[VDLP COREDUMP STEPS] 48 : We set the mm->core_state to NULL"
+				  " for process %d and mm=%p\n\n" , current->pid, current->mm);
+	}
+	else {
+		printk(KERN_ALERT "[VDLP COREDUMP STEPS] 20 : mm->core_state is NULL"
+				  " for process %d and mm=%p\n\n" , current->pid, current->mm);
+	}
 }
 
 /*
@@ -2033,7 +2116,11 @@ static int umh_pipe_setup(struct subprocess_info *info, struct cred *new)
 
 void do_coredump(long signr, int exit_code, struct pt_regs *regs)
 {
+#ifdef CONFIG_ACCURATE_COREDUMP
+	struct core_state *core_state;
+#else
 	struct core_state core_state;
+#endif
 	struct core_name cn;
 	struct mm_struct *mm = current->mm;
 	struct linux_binfmt * binfmt;
@@ -2042,6 +2129,7 @@ void do_coredump(long signr, int exit_code, struct pt_regs *regs)
 	int retval = 0;
 	int flag = 0;
 	int ispipe;
+	int mount_path_num = 0xFF; //initial value
 	static atomic_t core_dump_count = ATOMIC_INIT(0);
 	struct coredump_params cprm = {
 		.signr = signr,
@@ -2055,17 +2143,55 @@ void do_coredump(long signr, int exit_code, struct pt_regs *regs)
 		.mm_flags = mm->flags,
 	};
 
+#ifdef  CONFIG_BINFMT_ELF_COMP
+#define    COMP_CORENAME_PATH  7
+       extern struct module *ultimate_module_check(const char * name);
+       struct module *mod_usbcore=NULL, *mod_ehci=NULL, *mod_storage=NULL;
+       const char *usb_module_list[3] = {"usbcore", "ehci_hcd", "usb_storage"};
+       unsigned char is_usbmodule_loaded = 0;
+       char comp_corename[COMP_CORENAME_PATH][CORENAME_MAX_SIZE + 1];
+       const char *usb_mount_list[6] = {"sda", "sda1", "sdb", "sdb1", "sdc", "sdc1"};
+       int cnt = 0;
+#endif
+
 	audit_core_dumps(signr);
 
 	binfmt = mm->binfmt;
-	if (!binfmt || !binfmt->core_dump)
+	if (!binfmt || !binfmt->core_dump) {
+		printk(KERN_ALERT "[VDLP COREDUMP STEPS] SIGNR 7\n\n" );
 		goto fail;
-	if (!__get_dumpable(cprm.mm_flags))
+	}
+	if (!__get_dumpable(cprm.mm_flags)) {
+		printk(KERN_ALERT "[VDLP COREDUMP STEPS] SIGNR 8\n\n" );
 		goto fail;
+	}
 
 	cred = prepare_creds();
-	if (!cred)
+	if (!cred) {
+		printk(KERN_ALERT "[VDLP COREDUMP STEPS] SIGNR 9\n\n" );
 		goto fail;
+	}
+#ifdef CONFIG_PNACL
+	if (current->group_leader)
+	{
+		printk(KERN_ALERT "[VDLP COREDUMP STEPS] SIGNR 9-1\n\n" );
+
+		get_task_struct(current->group_leader);
+		if(0 == strcmp(current->group_leader->comm, "nacl_helper_boo"))
+		{
+			printk("nacl_helper_bootstrap skips coredump\n");
+			put_task_struct(current->group_leader);
+			goto fail;
+		}
+		put_task_struct(current->group_leader);
+	}
+#endif
+        if((0 == strcmp(current->comm, "BIServer"))|| (0 == strcmp(current->comm, "MainServer")) || (0 == strcmp(current->comm, "PDSServer")) || (0 == strcmp(current->comm, "AppUpdate")))
+        {
+                printk(KERN_ALERT "### [SA_BSP] Skip to coredump BIServer,MainServer,PDSServer,AppUpdate\n");
+                goto fail;
+        }
+ 
 	/*
 	 *	We cannot trust fsuid as being the "true" uid of the
 	 *	process nor do we know its entire history. We only know it
@@ -2077,9 +2203,29 @@ void do_coredump(long signr, int exit_code, struct pt_regs *regs)
 		cred->fsuid = 0;	/* Dump root private */
 	}
 
+#ifdef CONFIG_ACCURATE_COREDUMP
+	if(unlikely(!mm->core_state)){
+		if(likely(core_state = early_core_state_alloc())) {
+			retval = coredump_wait(exit_code, core_state);
+			if (retval < 0) {
+				printk(KERN_ALERT "[VDLP COREDUMP STEPS] SIGNR 10\n\n" );
+
+				early_core_state_free(core_state);
+				goto fail_creds;
+			}
+		}
+		else {
+			printk(KERN_ALERT "[VDLP COREDUMP STEPS] SIGNR 22."
+					  " Not able to allocate core_state!!\n\n" );
+		}
+	}
+#else
 	retval = coredump_wait(exit_code, &core_state);
-	if (retval < 0)
+	if (retval < 0) {
+		printk(KERN_ALERT "[VDLP COREDUMP STEPS] SIGNR 11\n\n" );
 		goto fail_creds;
+	}
+#endif
 
 	old_cred = override_creds(cred);
 
@@ -2101,6 +2247,7 @@ void do_coredump(long signr, int exit_code, struct pt_regs *regs)
 		int dump_count;
 		char **helper_argv;
 
+		printk(KERN_ALERT "[VDLP COREDUMP STEPS] SIGNR 12\n\n" );
 		if (cprm.limit == 1) {
 			/*
 			 * Normally core limits are irrelevant to pipes, since
@@ -2151,14 +2298,108 @@ void do_coredump(long signr, int exit_code, struct pt_regs *regs)
 	} else {
 		struct inode *inode;
 
+		printk(KERN_ALERT "[VDLP COREDUMP STEPS] SIGNR 13\n\n" );
+
 		if (cprm.limit < binfmt->min_coredump)
 			goto fail_unlock;
+
+#ifdef  CONFIG_BINFMT_ELF_COMP
+        /* Change code for saving CoreDump file */
+       mod_usbcore = (struct module *)ultimate_module_check(usb_module_list[0]);
+       mod_ehci = (struct module *)ultimate_module_check(usb_module_list[1]);
+       mod_storage = (struct module *)ultimate_module_check(usb_module_list[2]);
+
+       for (cnt = 0; cnt < (COMP_CORENAME_PATH - 1); cnt++) {
+              snprintf(comp_corename[cnt], sizeof(comp_corename[cnt]),
+                              "/dtv/usb/%s/Coredump.%d.gz", usb_mount_list[cnt], current->pid);
+       }
+
+       snprintf(comp_corename[cnt], sizeof(comp_corename[cnt]), "/core/Coredump.%d.gz", current->pid);
+       
+       if (mod_usbcore && mod_ehci && mod_storage)
+       {
+              is_usbmodule_loaded = 1;        /* all usb modules loaded */
+              printk(KERN_ALERT "***** Coredump : Insert USB memory stick, mount check per 10sec... *****\n");
+detect:
+       cprm.file = filp_open(comp_corename[0], O_CREAT | 2 | O_NOFOLLOW | O_LARGEFILE | flag, 0600);
+
+       if(IS_ERR(cprm.file))
+       {
+               cprm.file = filp_open(comp_corename[1], O_CREAT | 2 | O_NOFOLLOW | O_LARGEFILE | flag, 0600);
+       }
+       else
+       {
+		if (mount_path_num == 0xFF)       
+	       		mount_path_num = 0;
+       }
+	   
+       if(IS_ERR(cprm.file))
+       {
+               cprm.file = filp_open(comp_corename[2], O_CREAT | 2 | O_NOFOLLOW | O_LARGEFILE | flag, 0600);
+       }
+       else
+       {
+	       if (mount_path_num == 0xFF)
+			mount_path_num = 1;
+       }
+	   
+       if(IS_ERR(cprm.file))
+       {
+               cprm.file = filp_open(comp_corename[3], O_CREAT | 2 | O_NOFOLLOW | O_LARGEFILE | flag, 0600);
+       }
+       else
+       {
+        	if (mount_path_num == 0xFF)
+	       		mount_path_num = 2;
+       }
+	   
+       if(IS_ERR(cprm.file))
+       {
+               cprm.file = filp_open(comp_corename[4], O_CREAT | 2 | O_NOFOLLOW | O_LARGEFILE | flag, 0600);
+       }			  
+       else
+       {
+        	if (mount_path_num == 0xFF)       
+	       		mount_path_num = 3;
+       }
+	   
+       if(IS_ERR(cprm.file))
+       {
+               cprm.file = filp_open(comp_corename[5], O_CREAT | 2 | O_NOFOLLOW | O_LARGEFILE | flag, 0600);
+       }
+       else
+       {
+        	if (mount_path_num == 0xFF)       
+	       		mount_path_num = 4;
+       }	   
+
+              if (!IS_ERR(cprm.file)) {
+                      printk(KERN_ALERT "***** USB detected *****\n");
+                      printk(KERN_ALERT "***** Create pid : %d coredump file to USB mount dir %s ******\n", current->pid, comp_corename[mount_path_num]);
+              } else {
+                      mdelay(10 * 1000);
+                      goto detect;
+              }
+       } else {
+              is_usbmodule_loaded = 0;        /* return NULL, usb modules not loaded */
+              printk(KERN_ALERT "***** USB modules not loaded ******\n");
+              printk(KERN_ALERT "***** Create coredump file to tmpfs /core/Coredump.%d.gz ******\n", current->pid);
+              cprm.file = filp_open(comp_corename[6], O_CREAT | 2 | O_NOFOLLOW | O_LARGEFILE | flag, 0600);
+              if (IS_ERR(cprm.file))
+                      printk(KERN_ALERT "***** Coredump Fail... can't create corefile to /core dir *****\n");
+       }
+
+#else   /* original coredump */
+		printk(KERN_ALERT "[VDLP COREDUMP STEPS] SIGNR 14\n\n" );
 
 		cprm.file = filp_open(cn.corename,
 				 O_CREAT | 2 | O_NOFOLLOW | O_LARGEFILE | flag,
 				 0600);
-		if (IS_ERR(cprm.file))
+#endif
+		if (IS_ERR(cprm.file)) {
+			printk(KERN_ALERT "[VDLP COREDUMP STEPS] SIGNR 15\n\n" );
 			goto fail_unlock;
+		}
 
 		inode = cprm.file->f_path.dentry->d_inode;
 		if (inode->i_nlink > 1)
@@ -2183,7 +2424,24 @@ void do_coredump(long signr, int exit_code, struct pt_regs *regs)
 			goto close_fail;
 	}
 
+#ifdef  CONFIG_BINFMT_ELF_COMP
+    printk(KERN_ALERT "* Ultimate CoreDump v1.0 : started dumping core into 'Coredump.%d.gz' file *\n", current->pid);
+#else
+    printk(KERN_ALERT "* Original coredump : started dumping core into Coredump file *\n");
+#endif
+
+	printk(KERN_ALERT "[VDLP COREDUMP TRACE] binfmt->core_dump()\n");
 	retval = binfmt->core_dump(&cprm);
+#ifdef  CONFIG_BINFMT_ELF_COMP
+       if (is_usbmodule_loaded) {
+               printk(KERN_ALERT "***** Create coredump file to USB mount dir ******\n");
+       } else {
+               printk(KERN_ALERT "***** Create coredump file to tmpfs /core/Coredump.%d.gz ******\n", current->pid);
+       }
+#endif
+
+       printk(KERN_ALERT "CoreDump: finished dumping core\n");
+
 	if (retval)
 		current->signal->group_exit_code |= 0x80;
 
@@ -2198,11 +2456,16 @@ fail_dropcount:
 fail_unlock:
 	kfree(cn.corename);
 fail_corename:
+#ifndef CONFIG_ACCURATE_COREDUMP
 	coredump_finish(mm);
+#endif
 	revert_creds(old_cred);
 fail_creds:
 	put_cred(cred);
 fail:
+#ifdef CONFIG_ACCURATE_COREDUMP
+	coredump_finish(mm);
+#endif
 	return;
 }
 
@@ -2213,7 +2476,18 @@ fail:
  */
 int dump_write(struct file *file, const void *addr, int nr)
 {
-	return access_ok(VERIFY_READ, addr, nr) && file->f_op->write(file, addr, nr, &file->f_pos) == nr;
+	int r0;
+	int r1;
+
+	r0 = access_ok(VERIFY_READ, addr, nr);
+	r1 = file->f_op->write(file, addr, nr, &file->f_pos);
+
+	if (r1 < nr) {
+		printk(KERN_ALERT "##### No space left on device(disk full), check your device space \n");
+		printk(KERN_ALERT "##### rc : %d, nr : %d \n", r1, nr);
+	}
+
+	return r0 && r1 == nr;
 }
 EXPORT_SYMBOL(dump_write);
 
@@ -2245,3 +2519,170 @@ int dump_seek(struct file *file, loff_t off)
 	return ret;
 }
 EXPORT_SYMBOL(dump_seek);
+
+#ifdef CONFIG_ACCURATE_COREDUMP
+#include <linux/mempool.h>
+
+struct early_core_state {
+	struct core_state cs;
+	short next, prev;
+} ;
+
+#define MAX_CORE_STATES 256
+
+static mempool_t *core_state_pool = NULL;
+
+static struct early_core_state early_core_states[MAX_CORE_STATES];
+static short free_head_index;
+static spinlock_t core_states_lock;
+
+static void *core_state_alloc(gfp_t gfp_mask, void *data)
+{
+	return kmalloc(sizeof(struct core_state), gfp_mask);
+}
+
+static void core_state_free(void *cs, void *pool_data)
+{
+	kfree(cs);
+}
+
+static int __init early_coredump_init (void)
+{
+	int i;
+
+	core_state_pool = mempool_create(20, core_state_alloc,
+						core_state_free, (void *) 0);
+	BUG_ON(!core_state_pool);
+
+	spin_lock_init(&core_states_lock);
+	free_head_index = 0;
+
+	early_core_states[0].next = 1;
+	early_core_states[0].prev = MAX_CORE_STATES-1;
+
+	for (i = 1; i < MAX_CORE_STATES-1; i++) {
+		early_core_states[i].next = i+1;
+		early_core_states[i].prev = i-1;
+	}
+
+	early_core_states[MAX_CORE_STATES-1].next = 0;
+	early_core_states[MAX_CORE_STATES-1].prev = MAX_CORE_STATES-2;
+
+	return 0;
+}
+__initcall(early_coredump_init);
+
+static void* early_core_state_alloc(void)
+{
+	short ret_index ;
+
+	printk(KERN_ALERT "[VDLP COREDUMP STEPS] SIGNR 25."
+			  " Entered early_core_state_alloc for pid %d with mm=%p.\n\n" ,
+			  current->pid, current->mm);
+
+	spin_lock(&core_states_lock);
+
+	if (unlikely(-1 == free_head_index)) {
+		spin_unlock(&core_states_lock);
+		printk(KERN_ALERT "[VDLP COREDUMP STEPS] SIGNR 26."
+			  " Calling mempool_alloc for pid %d and mm=%p.\n\n" , current->pid, current->mm);
+		return mempool_alloc(core_state_pool,GFP_ATOMIC);
+	} else {
+		ret_index = free_head_index;
+
+		/* If head is being allocated, then reset head. */
+		if (unlikely(free_head_index ==
+					 early_core_states[free_head_index].next))
+			free_head_index = -1;
+		else {
+			early_core_states[early_core_states[free_head_index].next].prev
+				= early_core_states[free_head_index].prev;
+			early_core_states[early_core_states[free_head_index].prev].next
+				= early_core_states[free_head_index].next;
+			free_head_index = early_core_states[free_head_index].next;
+		}
+		early_core_states[ret_index].next = -1;
+		early_core_states[ret_index].prev = -1;
+
+		spin_unlock(&core_states_lock);
+	}
+
+	printk(KERN_ALERT "[VDLP COREDUMP STEPS] SIGNR 27."
+			  " Allocated core_state %p for PID %d and mm=%p.\n\n" ,
+				&early_core_states[ret_index].cs, current->pid, current->mm);
+
+	return &early_core_states[ret_index].cs;
+}
+
+static void early_core_state_free(void *cs)
+{
+	struct early_core_state *ecs = ((struct early_core_state*)cs);
+
+	if (likely(ecs >= early_core_states &&
+				ecs < (early_core_states+MAX_CORE_STATES))) {
+		short free_index = ecs - early_core_states;
+
+		printk(KERN_ALERT "[VDLP COREDUMP STEPS] SIGNR 41."
+			  " Freeing core_state %p for PID %d and mm=%p.\n\n" ,
+				cs, current->pid, current->mm);
+
+		spin_lock(&core_states_lock);
+		memset(&early_core_states[free_index].cs, 0,
+						sizeof(struct core_state));
+		/* If all core_states were allocated, then reset the head. */
+		if(unlikely(-1 == free_head_index)) {
+			free_head_index = free_index;
+			early_core_states[free_head_index].next =
+							free_head_index;
+			early_core_states[free_head_index].prev =
+							free_head_index;
+		} else {
+			early_core_states[free_index].next = free_head_index;
+			early_core_states[free_index].prev =
+				early_core_states[free_head_index].prev;
+			early_core_states[early_core_states[\
+				free_head_index].prev].next = free_index;
+			early_core_states[free_head_index].prev = free_index;
+		}
+		spin_unlock(&core_states_lock);
+	} else {
+		printk(KERN_ALERT "[VDLP COREDUMP STEPS] SIGNR 42."
+			  " Freeing core_state %p for PID %d and mm=%p by using MEMPOOL.\n\n" ,
+				cs, current->pid, current->mm);
+
+		mempool_free(cs,core_state_pool);
+	}
+
+	printk(KERN_ALERT "[VDLP COREDUMP STEPS] SIGNR 40."
+			  " Freed core_state %p for PID %d and mm=%p.\n\n" ,
+				cs, current->pid, current->mm);
+}
+
+void early_coredump_wait(unsigned int sig)
+{
+	struct core_state *core_state;
+	extern int coredump_wait(int, struct core_state *);
+	extern struct mutex vd_coredump_mutex;
+	extern int vd_coredump_flag;
+#ifdef CONFIG_BINFMT_ELF_COMP
+	int cf;
+
+	mutex_lock(&vd_coredump_mutex);
+	cf = vd_coredump_flag;
+	mutex_unlock(&vd_coredump_mutex);
+
+	if (!cf)
+#endif
+	if (likely(sig_kernel_coredump(sig))) {
+		/* Using GFP_ATOMIC so that no sleep is possible. */
+		if(likely(core_state = early_core_state_alloc()))
+			if (coredump_wait(sig, core_state) < 0) {
+				early_core_state_free(core_state);
+
+				printk(KERN_ALERT "[VDLP COREDUMP STEPS] SIGNR 30."
+						  " Entered early_core_state_alloc for pid %d and mm=%p.\n\n",
+						  current->pid, current->mm);
+			}
+	}
+}
+#endif

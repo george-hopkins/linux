@@ -243,7 +243,9 @@ struct meta_index {
 #define LZMA_COMPRESSION	2
 #define LZO_COMPRESSION		3
 #define XZ_COMPRESSION		4
+#define GZIP_COMPRESSION    5
 
+/* Make sure this should be 8 byte align */
 struct squashfs_super_block {
 	__le32			s_magic;
 	__le32			inodes;

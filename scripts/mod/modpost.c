@@ -1724,7 +1724,8 @@ static void read_symbols(char *modname)
 	if (version)
 		maybe_frob_rcs_version(modname, version, info.modinfo,
 				       version - (char *)info.hdr);
-	if (version || (all_versions && !is_vmlinux(modname)))
+	if ((version || (all_versions && !is_vmlinux(modname))) &&
+					!strstr(modname, "tntfs"))
 		get_src_version(modname, mod->srcversion,
 				sizeof(mod->srcversion)-1);
 

@@ -31,6 +31,13 @@
 #define DEBUGP(fmt, a...)
 #endif
 
+#ifdef CONFIG_MSTAR_CHIP
+int internal_micom_model = 0;
+#endif
+
+#ifdef CONFIG_DTVLOGD_DYNAMIC_BUFFER_ADDRESS
+extern resource_size_t RAM_BUF_ADDR;
+#endif
 /* Protects all parameters, and incidentally kmalloced_param list. */
 static DEFINE_MUTEX(param_lock);
 
@@ -83,6 +90,10 @@ static inline int parameq(const char *input, const char *paramname)
 	return 0;
 }
 
+#ifdef CONFIG_SERIAL_INPUT_MANIPULATION
+extern void set_enable_string(char *val);
+#endif
+
 static int parse_one(char *param,
 		     char *val,
 		     const struct kernel_param *params,
@@ -93,6 +104,36 @@ static int parse_one(char *param,
 	int err;
 
 	/* Find parameter */
+
+#ifdef CONFIG_MSTAR_CHIP
+   if( !strcmp(param, "X5PM51" ))
+   {
+       internal_micom_model = 1;
+       return 0;
+   }
+#endif
+
+#ifdef CONFIG_SERIAL_INPUT_MANIPULATION
+	if( !strcmp(param, "SELP_ENABLE" ))
+	{
+			set_enable_string(val);
+			return 0;
+	}
+#else
+	if( !strcmp(param, "SELP_ENABLE" ))
+			return 0;
+#endif
+
+#ifdef CONFIG_DTVLOGD_DYNAMIC_BUFFER_ADDRESS
+        if( !strncmp(param, "EME_LOADADDR",12 ))
+	{
+			RAM_BUF_ADDR = simple_strtoul(val, NULL, 16);
+                        return 0;
+	}
+#else
+        if( !strncmp(param, "EME_LOADADDR",12 ))
+                        return 0;
+#endif
 	for (i = 0; i < num_params; i++) {
 		if (parameq(param, params[i].name)) {
 			/* No one handled NULL, so do it here. */

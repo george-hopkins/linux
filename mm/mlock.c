@@ -478,7 +478,7 @@ SYSCALL_DEFINE2(mlock, unsigned long, start, size_t, len)
 
 	if (!can_do_mlock())
 		return -EPERM;
-
+printk("[FOR DEBUG] \"%s\" called mlock start address:0x%x size:%dbyte \n", current->comm, start, len);
 	lru_add_drain_all();	/* flush pagevec */
 
 	down_write(&current->mm->mmap_sem);

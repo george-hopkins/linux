@@ -314,6 +314,50 @@ config USB_S3C_HSOTG
 	default USB_GADGET
 	select USB_GADGET_SELECTED
 
+config USB_GADGET_SDP_OTGD
+	boolean "SDP HS UDC"
+	depends on ARCH_CCEP
+	help
+	Samsung's DTV processors include high speed USB OTG2.0
+	controller. It has 8 configurable endpoints, as well as
+	endpoint zero (for control transfers).
+
+config USB_SDP_OTGD
+	tristate "SDP High Speed USB OTG device (new)"
+	depends on USB_GADGET && USB_GADGET_SDP_OTGD
+	default y
+	default USB_GADGET
+	select USB_GADGET_SELECTED
+	select USB_GADGET_DUALSPEED
+	help
+	  Say "y" to link the driver statically, or "m" to build a
+	  dynamically linked module called "sdp-otg" and force
+	  all gadget drivers to also be bynamically linked.
+
+config USB_GADGET_SDP_HSOTG
+	boolean "SDP HighSpeed OTG Device controller"
+	depends on ARCH_CCEP
+	select USB_GADGET_DUALSPEED
+	help
+	  The SDP USB2.0 high-speec gadget controller
+	  integrated into the SDP SoC.
+
+config USB_SDP_HSOTG
+	tristate
+	depends on USB_GADGET_SDP_HSOTG
+	default USB_GADGET
+	select USB_GADGET_SELECTED
+
+config USB_SDP_HSOTG_DMA
+	boolean "HSOTG Internal DMA mode"
+	depends on USB_SDP_HSOTG
+	default n
+
+config SAMSUNG_OTG_DEBUG
+        boolean "HSOTG REGISTER DEBUG"
+        depends on USB_SDP_HSOTG
+        default n
+
 config USB_GADGET_IMX
 	boolean "Freescale IMX USB Peripheral Controller"
 	depends on ARCH_MX1
@@ -959,6 +1003,64 @@ config USB_G_NOKIA
 
 	  It's only really useful for N900 hardware. If you're building
 	  a kernel for N900, say Y or M here. If unsure, say N.
+
+config USB_G_SAM_MULTI
+	tristate "Samsung Multifunction Composite Gadget (EXPERIMENTAL)"
+	depends on BLOCK && NET
+	select SAMSUNG_PATCH_WITH_USB_GADGET_COMMON
+	help
+	  The Multifunction Composite Gadget provides Ethernet EEM 
+	  and mass storage. 
+
+	  You will be asked to choose which of the two configurations is
+	  to be available in the gadget.  At least one configuration must
+	  be chosen to make the gadget usable.  Selecting more than one
+	  configuration will prevent Windows from automatically detecting
+	  the gadget as a composite gadget, so an INF file will be needed to
+	  use the gadget.
+
+	  Say "y" to link the driver statically, or "m" to build a
+	  dynamically linked module called "g_sam_multi".
+
+config SAMSUNG_PATCH_WITH_USB_GADGET_COMMON
+	bool
+	depends on USB_G_SAM_MULTI
+	default y
+
+config  SAMSUNG_BUTTOM_HALF
+	bool "Samsung patch for Bottom Half in Receive path"
+	depends on USB_G_SAM_MULTI
+	default y
+
+config SAMSUNG_PATCH_WITH_USB_GADGET_INFO
+	bool "Samsung patch for gadget information"
+	depends on USB_G_SAM_MULTI
+	default y
+
+config SAMSUNG_PATCH_WITH_USB_GADGET_STORAGE_REMOVABLE
+	bool "Samsung patch for removable storage driver"
+	depends on USB_G_SAM_MULTI
+	default y
+
+config SAMSUNG_PATCH_WITH_USB_GADGET_STORAGE_INTERFACE_MODIFY
+        bool "Samsung patch for storage gadget interface modify"
+        depends on USB_G_SAM_MULTI
+        default y
+
+config SAMSUNG_PATCH_WITH_USB_GADGET_STORAGE_MULTI_DEVICE_SUPPORT
+        bool "Samsung patch for storage gadget multi device support"
+        depends on USB_G_SAM_MULTI
+        default y
+
+config SAMSUNG_PATCH_WITH_USB_GADGET_STORAGE_PARTITION_DEVICE_SUPPORT
+        bool "Samsung patch for storage gadget partition device support"
+        depends on USB_G_SAM_MULTI
+        default y
+
+config SAMSUNG_CDC_EEM_DEBUG
+        bool "Samsung patch for debugging CDC EEM driver"
+        depends on USB_G_SAM_MULTI
+        default n
 
 config USB_G_MULTI
 	tristate "Multifunction Composite Gadget (EXPERIMENTAL)"

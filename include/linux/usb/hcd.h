@@ -23,6 +23,10 @@
 
 #include <linux/rwsem.h>
 
+#ifdef CONFIG_MSTAR_CHIP
+#define HOTPLUG    //tony add for hotplug when read/write device
+#endif
+
 #define MAX_TOPO_LEVEL		6
 
 /* This file contains declarations of usbcore internals that are mostly
@@ -92,6 +96,11 @@ struct usb_hcd {
 	 * hardware info/state
 	 */
 	const struct hc_driver	*driver;	/* hw-specific hooks */
+#if defined(CONFIG_NVT_NT72568)
+	unsigned long porcd;
+	unsigned long porcd2;
+	unsigned long nvt_flag;
+#endif
 
 	/* Flags that need to be manipulated atomically because they can
 	 * change while the host controller is running.  Always use
@@ -105,6 +114,9 @@ struct usb_hcd {
 #define HCD_FLAG_WAKEUP_PENDING		4	/* root hub is resuming? */
 #define HCD_FLAG_RH_RUNNING		5	/* root hub is running? */
 #define HCD_FLAG_DEAD			6	/* controller has died? */
+#if defined(CONFIG_NVT_NT72568)
+#define HCD_FLAG_NRY		7
+#endif
 
 	/* The flags can be tested using these macros; they are likely to
 	 * be slightly faster than test_bit().
@@ -133,8 +145,13 @@ struct usb_hcd {
 
 	int			irq;		/* irq allocated */
 	void __iomem		*regs;		/* device memory/io */
+#if defined(CONFIG_NVT_NT72568)
+	resource_size_t	rsrc_start;	/* memory/io resource start */
+	resource_size_t	rsrc_len;	/* memory/io resource length */
+#else
 	u64			rsrc_start;	/* memory/io resource start */
 	u64			rsrc_len;	/* memory/io resource length */
+#endif
 	unsigned		power_budget;	/* in mA, 0 = no limit */
 
 	/* bandwidth_mutex should be taken before adding or removing
@@ -152,6 +169,10 @@ struct usb_hcd {
 	struct usb_hcd		*shared_hcd;
 	struct usb_hcd		*primary_hcd;
 
+#ifdef CONFIG_MSTAR_CHIP
+	/* lock for usb reset */
+	spinlock_t		usb_reset_lock;
+#endif
 
 #define HCD_BUFFER_POOLS	4
 	struct dma_pool		*pool[HCD_BUFFER_POOLS];
@@ -169,6 +190,29 @@ struct usb_hcd {
 
 #define	HC_IS_RUNNING(state) ((state) & __ACTIVE)
 #define	HC_IS_SUSPENDED(state) ((state) & __SUSPEND)
+
+#ifdef CONFIG_MSTAR_CHIP
+	// Refactoring --- 2011.10.27 ---
+	u8      port_index;
+	u32     utmi_base;
+	u32     ehc_base;
+	u32     usbc_base;
+
+	u32     xhci_base;
+	u32     u3phy_d_base;
+	u32     u3phy_a_base;
+	u32     u3top_base;
+	u32     u3indctl_base;    
+
+	u32     root_port_devnum;
+	u8      enum_port_flag;
+	u8      enum_dbreset_flag;
+	u8      rootflag;
+
+	spinlock_t lock_usbreset;
+
+	u8      startup_conn_flag;  //120210, for port reset when connected at startup
+#endif
 
 	/* more shared queuing code would be good; it should support
 	 * smarter scheduling, handle transaction translators, etc;
@@ -345,6 +389,10 @@ struct hc_driver {
 		 * address is set
 		 */
 	int	(*update_device)(struct usb_hcd *, struct usb_device *);
+#if defined(CONFIG_NVT_NT72568)
+	void	(*port_nc) (struct usb_hcd *);
+#endif
+
 };
 
 extern int usb_hcd_link_urb_to_ep(struct usb_hcd *hcd, struct urb *urb);

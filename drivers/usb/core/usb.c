@@ -422,8 +422,9 @@ struct usb_device *usb_alloc_dev(struct usb_device *parent,
 	} else {
 		/* match any labeling on the hubs; it's one-based */
 		if (parent->devpath[0] == '0') {
-			snprintf(dev->devpath, sizeof dev->devpath,
-				"%d", port1);
+                 snprintf(dev->devpath, sizeof dev->devpath,
+                                "%d", port1);
+
 			/* Root ports are not counted in route string */
 			dev->route = 0;
 		} else {
@@ -436,10 +437,17 @@ struct usb_device *usb_alloc_dev(struct usb_device *parent,
 			else
 				dev->route = parent->route +
 					(15 << ((parent->level - 1)*4));
+
 		}
 
 		dev->dev.parent = &parent->dev;
 		dev_set_name(&dev->dev, "%d-%s", bus->busnum, dev->devpath);
+
+#ifdef SAMSUNG_PATCH_WITH_USB_HOTPLUG
+		// change reported devicepath (device1-1.2)
+		memset(dev->devbusportpath, 0x0, sizeof(dev->devbusportpath));
+		snprintf(dev->devbusportpath, sizeof(dev->devbusportpath), "%d-%s", bus->busnum, dev->devpath);
+#endif		  
 
 		/* hub driver sets up TT records */
 	}
@@ -1081,3 +1089,4 @@ static void __exit usb_exit(void)
 subsys_initcall(usb_init);
 module_exit(usb_exit);
 MODULE_LICENSE("GPL");
+

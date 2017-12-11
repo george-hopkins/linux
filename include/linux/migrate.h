@@ -64,5 +64,9 @@ static inline int migrate_huge_page_move_mapping(struct address_space *mapping,
 #define migrate_page NULL
 #define fail_migrate_page NULL
 
+#ifdef CONFIG_CMA
+extern struct mutex migrate_lock;
+#endif
+
 #endif /* CONFIG_MIGRATION */
 #endif /* _LINUX_MIGRATE_H */

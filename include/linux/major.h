@@ -155,6 +155,9 @@
 
 #define MMC_BLOCK_MAJOR		179
 
+#define CMA_CHAR_MAJOR		181
+#define HDMA_CHAR_MAJOR		182
+
 #define VXVM_MAJOR		199	/* VERITAS volume i/o driver    */
 #define VXSPEC_MAJOR		200	/* VERITAS volume config driver */
 #define VXDMP_MAJOR		201	/* VERITAS volume multipath driver */

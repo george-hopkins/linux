@@ -860,8 +860,29 @@ static struct td *dl_reverse_done_list (struct ohci_hcd *ohci)
 	u32		td_dma;
 	struct td	*td_rev = NULL;
 	struct td	*td = NULL;
-
+#ifdef CONFIG_ARCH_SDP1207	
+	ktime_t start;
+	ktime_t end;
+#endif	
 	td_dma = hc32_to_cpup (ohci, &ohci->hcca->done_head);
+
+#ifdef CONFIG_ARCH_SDP1207
+
+	/* FoxB: time out for usb to serial */	
+	start=ktime_get();
+	while(td_dma==0)
+	{
+		td_dma = hc32_to_cpup (ohci, &ohci->hcca->done_head);
+		end=ktime_get();
+		if(ktime_to_ns(ktime_sub(end,start))>30000)	// 30us time out 
+		{
+			ohci_err (ohci, "[%s:%d] ERROR read done_head 30us time out ..\n",__func__,__LINE__); 
+			ohci_err (ohci," [%s:%d] int interval=%lld nsec\n",__func__,__LINE__,ktime_to_ns(ktime_sub(end,start)));
+			break;
+		}
+	}
+	/*************************/
+#endif	
 	ohci->hcca->done_head = 0;
 	wmb();
 
@@ -1134,3 +1155,4 @@ dl_done_list (struct ohci_hcd *ohci)
 		td = td_next;
 	}
 }
+

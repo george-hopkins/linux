@@ -17,6 +17,9 @@
  */
 #ifndef __XFS_FS_H__
 #define __XFS_FS_H__
+#if  (defined(CONFIG_XFS_FS_TRUNCATE_RANGE) || defined(CONFIG_XFS_FS_SPLIT))
+#include <linux/pvr_edit.h>
+#endif
 
 /*
  * SGI's XFS filesystem's major stuff (constants, structures)
@@ -219,6 +222,17 @@ typedef struct xfs_fsop_resblks {
 	__u64  resblks;
 	__u64  resblks_avail;
 } xfs_fsop_resblks_t;
+
+#ifdef CONFIG_XFS_FS_SPLIT
+typedef struct xfs_split_data{
+                __u64 startoff; /* offset for split operation*/
+                void* ip; /* xfs inode pointer for the new file */
+                void* mp; /* pointer to mount point for new file */
+                void *tp; /* Transaction pointer for newly created file */
+                void* cur; /* Cursore for BTree format file */
+                void* flist; /* Free list for leaf blocks */
+}xfs_split_data_t;
+#endif
 
 #define XFS_FSOP_GEOM_VERSION	0
 
@@ -451,6 +465,13 @@ typedef struct xfs_handle {
 /*	XFS_IOC_GETBIOSIZE ---- deprecated 47	   */
 #define XFS_IOC_GETBMAPX	_IOWR('X', 56, struct getbmap)
 #define XFS_IOC_ZERO_RANGE	_IOW ('X', 57, struct xfs_flock64)
+
+#ifdef CONFIG_XFS_FS_TRUNCATE_RANGE
+#define XFS_IOC_TRUNCATE_RANGE          FTRUNCATERANGE
+#endif
+#ifdef CONFIG_XFS_FS_SPLIT
+#define XFS_IOC_SPLIT_FILE              FSPLIT
+#endif
 
 /*
  * ioctl commands that replace IRIX syssgi()'s

@@ -4664,6 +4664,11 @@ __init static int clear_boot_tracer(void)
 	return 0;
 }
 
+#ifdef CONFIG_KDEBUGD_FTRACE
+/* Let kdebugd have access to static functions in this file */
+#include "../kdebugd/trace/kdbg_ftrace_core_helper.c"
+#endif /* CONFIG_KDEBUGD_FTRACE */
+
 early_initcall(tracer_alloc_buffers);
 fs_initcall(tracer_init_debugfs);
 late_initcall(clear_boot_tracer);

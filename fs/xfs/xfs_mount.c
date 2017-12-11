@@ -1530,15 +1530,6 @@ xfs_unmountfs(
 				"Freespace may not be correct on next mount.");
 	xfs_unmountfs_writesb(mp);
 
-	/*
-	 * Make sure all buffers have been flushed and completed before
-	 * unmounting the log.
-	 */
-	error = xfs_flush_buftarg(mp->m_ddev_targp, 1);
-	if (error)
-		xfs_warn(mp, "%d busy buffers during unmount.", error);
-	xfs_wait_buftarg(mp->m_ddev_targp);
-
 	xfs_log_unmount_write(mp);
 	xfs_log_unmount(mp);
 	xfs_uuid_unmount(mp);

@@ -177,7 +177,11 @@ int nfs_initiate_read(struct nfs_read_data *data, struct rpc_clnt *clnt,
 		.callback_ops = call_ops,
 		.callback_data = data,
 		.workqueue = nfsiod_workqueue,
+#if defined(CONFIG_MSTAR_EMERALD)
+		.flags = swap_flags,     // X13 NFS dump image error, not use RPC_TASK_ASYNC
+#else
 		.flags = RPC_TASK_ASYNC | swap_flags,
+#endif
 	};
 
 	/* Set up the initial task struct. */

@@ -27,8 +27,12 @@
  */
 
 /*-------------------------------------------------------------------------*/
-#include <linux/usb/otg.h>
 
+#ifdef CONFIG_NVT_NT72568
+#include "ehci-NT72568.h"
+#endif
+
+#include <linux/usb/otg.h>
 #define	PORT_WAKE_BITS	(PORT_WKOC_E|PORT_WKDISC_E|PORT_WKCONN_E)
 
 #ifdef	CONFIG_PM
@@ -692,6 +696,16 @@ ehci_hub_status_data (struct usb_hcd *hcd, char *buf)
 			    buf [1] |= 1 << (i - 7);
 			status = STS_PCD;
 		}
+#ifdef CONFIG_NVT_NT72568
+		if ((temp & mask) == 0 && test_bit(i+1, &hcd->porcd) 
+				&& status != STS_PCD){ 
+			if (i < 7)
+			    buf [0] |= 1 << (i + 1);
+			else
+			    buf [1] |= 1 << (i - 7);
+			status = STS_PCD;
+		}
+#endif				
 	}
 	/* FIXME autosuspend idle root hubs */
 	spin_unlock_irqrestore (&ehci->lock, flags);
@@ -941,15 +955,31 @@ static int ehci_hub_control (
 					ehci->reset_done[wIndex])) {
 			status |= USB_PORT_STAT_C_RESET << 16;
 			ehci->reset_done [wIndex] = 0;
-
+#ifdef CONFIG_NVT_NT72568
+		ehci_writel(ehci, 0, (__u32 *)(((__u32)ehci->apbs)+0x434)); //fix dongle cannot be recgonized
+		ehci_readl(ehci, (__u32 *)(((__u32 )ehci->apbs)+0x434)); 
+#endif
 			/* force reset to complete */
 			ehci_writel(ehci, temp & ~(PORT_RWC_BITS | PORT_RESET),
 					status_reg);
+
+
+#ifdef CONFIG_NVT_NT72568
+			if(hcd->nvt_flag == 1){
+				ehci_writel(ehci, 0x0, (__u32 *)(((__u32)ehci->apbs)+0x4c8)); 
+				ehci_readl(ehci, (__u32 *)(((__u32 )ehci->apbs)+0x4c8));
+			}
+#endif		 			
 			/* REVISIT:  some hardware needs 550+ usec to clear
 			 * this bit; seems too long to spin routinely...
 			 */
+#ifdef CONFIG_NVT_NT72568
+			retval = handshake(ehci, status_reg,
+					PORT_RESET, 0, 3000);
+#else
 			retval = handshake(ehci, status_reg,
 					PORT_RESET, 0, 1000);
+#endif
 			if (retval != 0) {
 				ehci_err (ehci, "port %d reset error %d\n",
 					wIndex + 1, retval);
@@ -983,11 +1013,15 @@ static int ehci_hub_control (
 		if (temp & PORT_CONNECT) {
 			status |= USB_PORT_STAT_CONNECTION;
 			// status may be from integrated TT
+#ifdef CONFIG_NVT_NT72568
+			status |= ehci_port_speed(ehci, ehci_readl(ehci,(__u32 __iomem *) ((hcd->rsrc_start)+0x80)));
+#else
 			if (ehci->has_hostpc) {
 				temp1 = ehci_readl(ehci, hostpc_reg);
 				status |= ehci_port_speed(ehci, temp1);
 			} else
 				status |= ehci_port_speed(ehci, temp);
+#endif
 		}
 		if (temp & PORT_PE)
 			status |= USB_PORT_STAT_ENABLE;
@@ -1001,8 +1035,11 @@ static int ehci_hub_control (
 			if (temp & PORT_PE)
 				set_bit(wIndex, &ehci->port_c_suspend);
 		}
-
+#ifdef CONFIG_NVT_NT72568
+		if (temp & PORT_OC && !ignore_oc)
+#else
 		if (temp & PORT_OC)
+#endif
 			status |= USB_PORT_STAT_OVERCURRENT;
 		if (temp & PORT_RESET)
 			status |= USB_PORT_STAT_RESET;
@@ -1010,6 +1047,13 @@ static int ehci_hub_control (
 			status |= USB_PORT_STAT_POWER;
 		if (test_bit(wIndex, &ehci->port_c_suspend))
 			status |= USB_PORT_STAT_C_SUSPEND << 16;
+
+#ifdef CONFIG_NVT_NT72568
+	//clear flag
+	if (!(temp & PORT_CONNECT) && (hcd->nvt_flag == 1)) {
+		hcd->nvt_flag = 0;
+	}
+#endif
 
 #ifndef	VERBOSE_DEBUG
 	if (status & ~0xffff)	/* only if wPortChange is interesting */
@@ -1107,6 +1151,14 @@ static int ehci_hub_control (
 				ehci->reset_done [wIndex] = jiffies
 						+ msecs_to_jiffies (50);
 			}
+#ifdef CONFIG_NVT_NT72568
+		ehci_writel(ehci, 0x8, (__u32 *)(((__u32)ehci->apbs)+0x434)); //fix dongle cannot be recgonized
+
+		if(hcd->nvt_flag == 1){
+			ehci_writel(ehci, 0xc0, (__u32 *)(((__u32)ehci->apbs)+0x4c8)); 
+			ehci_readl(ehci, (__u32 *)(((__u32 )ehci->apbs)+0x4c8));
+		}
+#endif
 			ehci_writel(ehci, temp, status_reg);
 			break;
 

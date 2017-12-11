@@ -7,7 +7,9 @@
 #define USB_MAJOR			180
 #define USB_DEVICE_MAJOR		189
 
-
+#ifdef CONFIG_MSTAR_CHIP
+#define HOTPLUG			//tony add for hotplug
+#endif
 #ifdef __KERNEL__
 
 #include <linux/errno.h>        /* for -ENODEV */
@@ -425,7 +427,17 @@ struct usb_tt;
  */
 struct usb_device {
 	int		devnum;
+#ifdef CONFIG_MSTAR_CHIP
+#ifdef HOTPLUG
+        int  devnum1;  //tony for hotplug check
+#endif
+#endif
 	char		devpath[16];
+
+#ifdef SAMSUNG_PATCH_WITH_USB_HOTPLUG
+	char  devbusportpath [16];  	/* Use in messages: /bus/port/... */  	// 080507
+#endif
+
 	u32		route;
 	enum usb_device_state	state;
 	enum usb_device_speed	speed;
@@ -1215,6 +1227,17 @@ struct urb {
 	int error_count;		/* (return) number of ISO errors */
 	void *context;			/* (in) context for completion */
 	usb_complete_t complete;	/* (in) completion routine */
+#ifdef CONFIG_MSTAR_CHIP
+	 void *SetDMABuf;	//Note, for DMA
+	 void *tmpSetDMABuf;
+	 s32 SetDMALen;
+	 void *Orignal_SetDMABuf;
+	 
+	 void *TxDMABuf;
+	 void *tmpTxDMABuf;
+	 s32 TxDMALen;
+	 void *Orignal_TxDMABuf;
+#endif	
 	struct usb_iso_packet_descriptor iso_frame_desc[0];
 					/* (in) ISO ONLY */
 };

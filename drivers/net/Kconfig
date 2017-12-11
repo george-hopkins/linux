@@ -222,6 +222,31 @@ menuconfig NET_ETHERNET
 
 if NET_ETHERNET
 
+
+config NVT_FASTETH_MAC
+        tristate "Novatek Fast Ethernet Mac support"
+        help
+          Support for Novatek Mac and Micrel phy only.          
+		
+config NVT_FASTETH_MAC_NAPI
+		bool "Novatek Fast Ethernet NAPI Support"
+		depends on NVT_FASTETH_MAC
+		help
+			Support the NAPI function.
+			
+choice
+		prompt "Ethernet Phy Type"
+		depends on NVT_FASTETH_MAC
+		default NVT_RTL_PHY_SUPPORT 
+		
+config NVT_MICREL_PHY_SUPPORT
+		bool "Micrel Ethernet Phy Support"
+		#depends on NVT_FASTETH_MAC		
+		
+config NVT_RTL_PHY_SUPPORT
+		bool "Realtek Ethernet Phy Support"
+		#depends on NVT_FASTETH_MAC
+endchoice	       
 config MACB
 	tristate "Atmel MACB support"
 	depends on HAVE_NET_MACB

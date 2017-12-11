@@ -558,6 +558,15 @@ void wait_on_page_bit(struct page *page, int bit_nr)
 							TASK_UNINTERRUPTIBLE);
 }
 EXPORT_SYMBOL(wait_on_page_bit);
+#ifdef CONFIG_SQUASHFS_INCL_BIO
+void wait_on_page_update_bit(struct page *page, int bit_nr, wait_queue_head_t *wq)
+{
+    //wait_event (*wq, test_bit(bit_nr, &page->flags)); 
+    wait_event_interruptible(*wq, test_bit(bit_nr, &page->flags));
+}
+
+EXPORT_SYMBOL(wait_on_page_update_bit);
+#endif
 
 int wait_on_page_bit_killable(struct page *page, int bit_nr)
 {
@@ -1050,6 +1059,10 @@ EXPORT_SYMBOL(grab_cache_page_nowait);
 static void shrink_readahead_size_eio(struct file *filp,
 					struct file_ra_state *ra)
 {
+#ifdef CONFIG_FS_SEL_READAHEAD
+	if (ra->state && !atomic_read(ra->state))
+		return;
+#endif
 	ra->ra_pages /= 4;
 }
 
@@ -1078,6 +1091,7 @@ static void do_generic_file_read(struct file *filp, loff_t *ppos,
 	unsigned long offset;      /* offset into pagecache page */
 	unsigned int prev_offset;
 	int error;
+	int ra_count = 0; /* Manish */
 
 	index = *ppos >> PAGE_CACHE_SHIFT;
 	prev_index = ra->prev_pos >> PAGE_CACHE_SHIFT;
@@ -1243,7 +1257,19 @@ readpage:
 			}
 			unlock_page(page);
 		}
-
+		/*
+		 * Manish (m03.kumar@samsung.com): This is just heuristic, not a solution.
+		 * Readahead size is scaled up as soon as we get sufficient good pages to
+		 * avoid permanent slowdown.
+		 */
+		if(!ra->ra_pages && ra_count >= 2 * VM_MAX_READAHEAD * 1024 / PAGE_CACHE_SIZE){
+			ra->ra_pages = 2;
+			ra_count = 0;
+		}
+		else if(!ra->ra_pages && ra_count < 2 * VM_MAX_READAHEAD * 1024 / PAGE_CACHE_SIZE){
+			ra_count++;
+		}
+		/* Manish: I am done */
 		goto page_ok;
 
 readpage_error:
@@ -1576,7 +1602,12 @@ static void do_sync_mmap_readahead(struct vm_area_struct *vma,
 	/*
 	 * mmap read-around
 	 */
+#ifdef CONFIG_FS_SEL_READAHEAD
+	ra_pages = (ra->state && !atomic_read(ra->state)) ? 0 :
+		max_sane_readahead(file->f_ra.ra_pages);                 
+#else 
 	ra_pages = max_sane_readahead(ra->ra_pages);
+#endif
 	ra->start = max_t(long, 0, offset - ra_pages / 2);
 	ra->size = ra_pages;
 	ra->async_size = ra_pages / 4;

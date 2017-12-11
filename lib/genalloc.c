@@ -92,8 +92,10 @@ phys_addr_t gen_pool_virt_to_phys(struct gen_pool *pool, unsigned long addr)
 	list_for_each(_chunk, &pool->chunks) {
 		chunk = list_entry(_chunk, struct gen_pool_chunk, next_chunk);
 
-		if (addr >= chunk->start_addr && addr < chunk->end_addr)
+		if (addr >= chunk->start_addr && addr < chunk->end_addr) {
+			read_unlock(&pool->lock);
 			return chunk->phys_addr + addr - chunk->start_addr;
+		}
 	}
 	read_unlock(&pool->lock);
 
@@ -130,6 +132,63 @@ void gen_pool_destroy(struct gen_pool *pool)
 	return;
 }
 EXPORT_SYMBOL(gen_pool_destroy);
+
+#ifdef CONFIG_CMA
+/**
+ * gen_pool_alloc_aligned() - allocate special memory from the pool
+ * @pool:	Pool to allocate from.
+ * @size:	Number of bytes to allocate from the pool.
+ * @alignment_order:	Order the allocated space should be
+ *			aligned to (eg. 20 means allocated space
+ *			must be aligned to 1MiB).
+ *
+ * Allocate the requested number of bytes from the specified pool.
+ * Uses a first-fit algorithm.
+ */
+unsigned long __must_check
+gen_pool_alloc_aligned(struct gen_pool *pool, size_t size,
+		       unsigned alignment_order)
+{
+	struct list_head *_chunk;
+	struct gen_pool_chunk *chunk;
+	unsigned long addr, flags, align_mask = 0;
+	int order = pool->min_alloc_order;
+	int nbits, start_bit, end_bit;
+
+	if (size == 0)
+		return 0;
+
+        if (alignment_order > pool->min_alloc_order)
+                align_mask = (1 << (alignment_order - pool->min_alloc_order)) - 1; 
+
+	nbits = (size + (1UL << order) - 1) >> order;
+
+	read_lock(&pool->lock);
+	list_for_each(_chunk, &pool->chunks) {
+		chunk = list_entry(_chunk, struct gen_pool_chunk, next_chunk);
+
+		end_bit = (chunk->end_addr - chunk->start_addr) >> order;
+
+		spin_lock_irqsave(&chunk->lock, flags);
+		start_bit = bitmap_find_next_zero_area_off(chunk->bits, end_bit, 0,
+						nbits, align_mask, chunk->start_addr);
+		if (start_bit >= end_bit) {
+			spin_unlock_irqrestore(&chunk->lock, flags);
+			continue;
+		}
+
+		addr = chunk->start_addr + ((unsigned long)start_bit << order);
+
+		bitmap_set(chunk->bits, start_bit, nbits);
+		spin_unlock_irqrestore(&chunk->lock, flags);
+		read_unlock(&pool->lock);
+		return addr;
+	}
+	read_unlock(&pool->lock);
+	return 0;
+}
+EXPORT_SYMBOL(gen_pool_alloc_aligned);
+#endif
 
 /**
  * gen_pool_alloc - allocate special memory from the pool

@@ -75,8 +75,19 @@
 #include <asm/sections.h>
 #include <asm/cacheflush.h>
 
+#ifdef CONFIG_VDLP_VERSION_INFO
+#include <linux/vdlp_version.h>
+#endif
+
 #ifdef CONFIG_X86_LOCAL_APIC
 #include <asm/smp.h>
+#endif
+
+#ifdef CONFIG_EXECUTE_AUTHULD
+#include "secureboot/include/Secureboot.h"
+#include "secureboot/include/hmac_sha1.h"
+
+extern int MicomCtrl(unsigned char ctrl);
 #endif
 
 static int kernel_init(void *);
@@ -88,6 +99,19 @@ extern void sbus_init(void);
 extern void prio_tree_init(void);
 extern void radix_tree_init(void);
 extern void free_initmem(void);
+
+#if defined(CONFIG_ARCH_SDP1106)
+extern void __init sdp1106_l2c_init(void);
+#endif
+#if defined(CONFIG_ARCH_SDP1105)
+extern void __init sdp1105_l2c_init(void);
+#endif
+
+
+#if defined(CONFIG_MSTAR_AMBER3) || defined(CONFIG_MSTAR_EDISON)
+extern void __init serial_init(void);
+#endif
+
 #ifndef CONFIG_DEBUG_RODATA
 static inline void mark_rodata_ro(void) { }
 #endif
@@ -113,6 +137,10 @@ EXPORT_SYMBOL(system_state);
  */
 #define MAX_INIT_ARGS CONFIG_INIT_ENV_ARG_LIMIT
 #define MAX_INIT_ENVS CONFIG_INIT_ENV_ARG_LIMIT
+
+#ifdef CONFIG_EXECUTE_AUTHULD
+static char * auth_argv_init[MAX_INIT_ARGS+2] = {CONFIG_AUTHULD_PATH, NULL, };
+#endif
 
 extern void time_init(void);
 /* Default late time init is NULL. archs can override this later. */
@@ -551,6 +579,16 @@ asmlinkage void __init start_kernel(void)
 
 	kmem_cache_init_late();
 
+#if defined(CONFIG_MSTAR_AMBER3) || defined(CONFIG_MSTAR_EDISON)
+	//switch FIQ/IRQ merge bit
+	//reg_writew(0x0002, 0x1F203114);
+	unsigned short tmp;
+	tmp=reg_readw(0x1f203adc);
+	tmp|=0x20;  //FPGA-820 ,08/22 sof
+	reg_writew(tmp, 0x1f203adc);
+	serial_init();
+#endif
+
 	/*
 	 * HACK ALERT! This is early. We're enabling the console before
 	 * we've done PCI setups etc, and console_init() must be aware of
@@ -733,6 +771,262 @@ static void run_init_process(const char *init_filename)
 	kernel_execve(init_filename, argv_init, envp_init);
 }
 
+#ifdef CONFIG_EXECUTE_AUTHULD
+static int wait_authuld(unsigned char *mkey)
+{
+	int i;
+	int fd =-1;
+	int success_result;
+	int read_len;
+#ifdef CONFIG_RSA1024
+	unsigned char buf[HMAC_SIZE];
+	unsigned char input_buf[HMAC_SIZE];
+	unsigned char mac[HMAC_SIZE];
+#elif CONFIG_RSA2048
+	unsigned char buf[HMAC_SHA256_SIZE];
+	unsigned char input_buf[HMAC_SHA256_SIZE];
+	unsigned char mac[HMAC_SHA256_SIZE];
+#endif
+
+	/* total 2 min waiting.*/
+	for(i=0; i<(CONFIG_TIMEOUT_ACK_AUTHULD*60); i++)
+	{
+		fd = sys_open(SIGNAL_FLAG_TEST, O_RDONLY,0);
+
+#ifdef CONFIG_RSA1024
+		read_len = sys_read(fd, buf, HMAC_SIZE);
+		if((fd >= 0) && (read_len >= HMAC_SIZE))
+#elif CONFIG_RSA2048
+		read_len = sys_read(fd, buf, HMAC_SHA256_SIZE);
+		if((fd >= 0) && (read_len >= HMAC_SHA256_SIZE))
+#endif
+		{
+			sys_close(fd);
+			sys_unlink(SIGNAL_FLAG_TEST);
+			success_result = 23;
+			memcpy(input_buf, &success_result, 4);
+#ifdef CONFIG_RSA1024
+#if CONFIG_HW_SHA1
+			HMAC_Sha1_buf_nokey(input_buf,4, mac);
+#else
+			HMAC_Sha1_buf(mkey,input_buf, 4, mac);
+#endif
+			if( memcmp( buf, mac, HMAC_SIZE) == 0 )
+#elif CONFIG_RSA2048
+#if CONFIG_HW_SHA1
+			HMAC_Sha256_buf_nokey(input_buf,4, mac);
+#else
+			HMAC_Sha256_buf(mkey,input_buf, 4, mac);
+#endif
+			if( memcmp( buf, mac, HMAC_SHA256_SIZE) == 0 )
+#endif
+			{
+				CIP_DEBUG_PRINT("authentication success!!!\n");
+				return 1;
+			}
+			else
+			{
+				CIP_CRIT_PRINT("authentication fail!!\n");
+				return 0;
+			}
+		}
+		CIP_DEBUG_PRINT("(%d)th waiting.\n", i);
+		ssleep(1);
+
+	}
+
+	CIP_CRIT_PRINT("authentication fail!!\n");
+	return 0;
+}
+
+void Exception_from_authuld(const unsigned char *msg)
+{
+	int i;
+	CIP_CRIT_PRINT("%s", msg);
+	for(i=0;i<3;i++)
+	{
+		CIP_CRIT_PRINT("[%s::%s::%d]auth failed in kernel. System Down.\n", __FILE__, __FUNCTION__, __LINE__);
+	}
+#ifdef CONFIG_SHUTDOWN
+	MicomCtrl(115);
+	msleep(100);
+	panic("[kernel] System down\n");
+#endif
+}
+
+static int check_ci_app_integrity_with_size(unsigned char *key, char *filename, int input_size, unsigned char *mac)
+{
+	int fd =-1;
+	mm_segment_t old_fs;
+#ifdef CONFIG_RSA1024
+	unsigned char cmac_result[HMAC_SIZE];
+#elif CONFIG_RSA2048
+	unsigned char cmac_result[HMAC_SHA256_SIZE];
+#endif
+	struct stat64 statbuf;
+	int retValue;
+
+	sys_stat64(filename, &statbuf);
+	if(input_size != statbuf.st_size)
+	{
+		CIP_CRIT_PRINT("%s size is different (mac_gen:%d, real:%d)\n", filename, input_size, (int)statbuf.st_size);
+		return 1;
+	}
+
+	/* key copy routine should be required here */
+	old_fs = get_fs();
+	set_fs(KERNEL_DS);
+	fd = sys_open(filename, O_RDONLY, 0);
+#ifdef CONFIG_RSA1024
+	if (fd >= 0)
+	{
+#if CONFIG_HW_SHA1
+		HMAC_Sha1_nokey(fd, input_size, cmac_result);
+#else
+		HMAC_Sha1(key, fd,input_size, cmac_result);
+#endif
+
+#ifdef SECURE_DEBUG
+		printk("\n[authuld hmac]\n");
+		print_20byte(cmac_result);
+#endif
+		sys_close(fd);
+	}
+	else
+	{
+		CIP_WARN_PRINT("Warning: unable to open %s.\n", filename);
+	}
+
+	set_fs(old_fs);
+	retValue = verify_rsa_signature(cmac_result, HMAC_SIZE, mac, RSA_1024_SIGN_SIZE);
+#elif CONFIG_RSA2048
+	if (fd >= 0)
+	{
+#if CONFIG_HW_SHA1
+		HMAC_Sha256_nokey(fd, input_size, cmac_result);
+#else
+		HMAC_Sha256(key, fd,input_size, cmac_result);
+#endif
+
+#ifdef SECURE_DEBUG
+		printk("\n[authuld hmac]\n");
+		print_32byte(cmac_result);
+#endif
+		sys_close(fd);
+	}
+	else
+	{
+		CIP_WARN_PRINT("Warning: unable to open %s.\n", filename);
+	}
+
+	set_fs(old_fs);
+	retValue = verify_rsa_signature_2048(cmac_result, HMAC_SHA256_SIZE, mac, RSA_2048_SIGN_SIZE);
+#endif
+
+	/* If no error occurs, return 0  */
+	if(retValue == 0)
+	{
+		return 0;
+	}
+
+	return 1;
+}
+
+static void execute_authuld(void)
+{
+	current->flags |= PF_NOFREEZE;
+	auth_argv_init[0] = CONFIG_AUTHULD_PATH;
+#ifdef CONFIG_SHUTDOWN
+	auth_argv_init[1] = "0";
+#else
+	auth_argv_init[1] = "1";
+#endif
+	kernel_execve(CONFIG_AUTHULD_PATH, auth_argv_init, envp_init);
+	CIP_DEBUG_PRINT("\n\n  execute authuld\n\n");
+	do_exit(0);
+}
+
+
+void print128(unsigned char *bytes)
+{
+	int j;
+
+	for (j=0; j<16;j++)
+	{
+		CIP_DEBUG_PRINT("%02x",bytes[j]);
+		if ( (j%4) == 3 )
+		{
+			CIP_DEBUG_PRINT(" ");
+		}
+	}
+	CIP_DEBUG_PRINT("\n\n");
+}
+
+static int check_ci_app(void)
+{
+	unsigned char mkey[16]={0,};
+	macAuthULd_t macAuthUld;
+
+	int fd;
+	int i = 0;
+	int fileOpenFlag = 0;
+	ssleep(SLEEP_WAITING);
+	current->flags |= PF_NOFREEZE;
+
+	getAuthUld(&macAuthUld);
+
+	/* openÇÒ ¼ö ÀÖÀ» ¶§ ±îÁö pollingÇÑ´Ù */
+	/******************** START ************************/
+	fileOpenFlag = 0;
+
+	for(i=0;i<10000;i++)
+	{
+		if((fd=sys_open(CONFIG_AUTHULD_PATH, O_RDONLY, 0 ) )>= 0)
+		{
+			CIP_DEBUG_PRINT("%s can read  (after=%d)\n",CONFIG_AUTHULD_PATH, i);
+			sys_close(fd);
+			fileOpenFlag = 1;
+			break;
+		}
+		msleep(10);
+	}
+	if( fileOpenFlag == 0 )
+	{
+		Exception_from_authuld("Unable to open authuld\n");
+	}
+	/******************** END ************************/
+	if(check_ci_app_integrity_with_size(mkey,
+				CONFIG_AUTHULD_PATH,
+				macAuthUld.macAuthULD.msgLen,
+				macAuthUld.macAuthULD.au8PreCmacResult) == 0)
+	{
+		/* Á¤»óÀûÀÎ °æ¿ìÀÓ */
+		CIP_CRIT_PRINT(">>> (%s) file is successfully authenticated <<< \n", CONFIG_AUTHULD_PATH);
+
+		kernel_thread((void*)execute_authuld,NULL,0);
+		if(wait_authuld(mkey) < 1)
+		{
+			CIP_DEBUG_PRINT("There is an error in authuld or authuld did not respond in %d minutes!!\n", CONFIG_TIMEOUT_ACK_AUTHULD);
+			/* error Ã³¸® */
+			Exception_from_authuld("timeout\n");
+		}
+		else
+		{
+			CIP_CRIT_PRINT("Success!! Authuld is successfully completed.\n");
+		}
+	}
+	else
+	{
+		// authuld ÀÎÁõ ½ÇÆÐ½Ã¿¡´Â Ç×»ó fastboot µÇµµ·Ï ¼º°ø ¸Þ¼¼Áö¸¦ write ÇÔ.
+		/* ¹®Á¦°¡ µÇ´Â °æ¿ìÀÓ */
+		CIP_DEBUG_PRINT(">>> (%s) file is illegally modified!! <<< \n", CONFIG_AUTHULD_PATH);
+		Exception_from_authuld("authuld authentication failed\n");
+	}
+
+	do_exit(0);
+}
+#endif
+
 /* This is a non __init function. Force it to be noinline otherwise gcc
  * makes it inline to init() and it becomes part of init.text section
  */
@@ -765,6 +1059,9 @@ static noinline int init_post(void)
 		printk(KERN_WARNING "Failed to execute %s.  Attempting "
 					"defaults...\n", execute_command);
 	}
+#ifdef CONFIG_EXECUTE_AUTHULD
+   kernel_thread((void*)check_ci_app, NULL, 0);
+#endif
 	run_init_process("/sbin/init");
 	run_init_process("/etc/init");
 	run_init_process("/bin/init");
@@ -773,6 +1070,10 @@ static noinline int init_post(void)
 	panic("No init found.  Try passing init= option to kernel. "
 	      "See Linux Documentation/init.txt for guidance.");
 }
+
+#ifdef CONFIG_MMC_BOOTING_SYNC
+extern struct completion mmc_rescan_work;
+#endif
 
 static int __init kernel_init(void * unused)
 {
@@ -799,11 +1100,36 @@ static int __init kernel_init(void * unused)
 
 	do_pre_smp_initcalls();
 	lockup_detector_init();
-
+	
+#if defined(CONFIG_ARCH_SDP1106)
+	sdp1106_l2c_init();
+#elif defined(CONFIG_ARCH_SDP1105) 
+	sdp1105_l2c_init();
+#elif defined(CONFIG_MSTAR_AMBER3) 
+	extern void __init amber3_l2c_init(void);
+	amber3_l2c_init();
+#elif defined(CONFIG_MSTAR_EDISON) 
+	extern void __init edison_l2c_init(void);
+	edison_l2c_init();
+#endif
 	smp_init();
 	sched_init_smp();
 
 	do_basic_setup();
+#ifdef CONFIG_NVT_CHIP
+        extern void kernel_protect_range_get(void);
+        kernel_protect_range_get();
+#endif
+#ifdef CONFIG_VDLP_VERSION_INFO
+       printk(KERN_ALERT"================================================================================\n");
+       printk(KERN_ALERT" SAMSUNG VDLP Kernel\n");
+       printk(KERN_ALERT" Version : %s\n", DTV_KERNEL_VERSION);
+       printk(KERN_ALERT" Applied Last Patch Number : %s\n", DTV_LAST_PATCH);
+#ifdef CONFIG_PULLOUT_INITRAMFS
+       printk(KERN_ALERT"RAMDISK BSP!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+#endif
+       printk(KERN_ALERT"================================================================================\n");
+#endif
 
 	/* Open the /dev/console on the rootfs, this should never fail */
 	if (sys_open((const char __user *) "/dev/console", O_RDWR, 0) < 0)
@@ -818,6 +1144,11 @@ static int __init kernel_init(void * unused)
 
 	if (!ramdisk_execute_command)
 		ramdisk_execute_command = "/init";
+
+#ifdef CONFIG_MMC_BOOTING_SYNC
+	/* BSP : wait till completion of mmc rescan */
+	wait_for_completion(&mmc_rescan_work);
+#endif
 
 	if (sys_access((const char __user *) ramdisk_execute_command, 0) != 0) {
 		ramdisk_execute_command = NULL;

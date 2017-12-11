@@ -73,7 +73,22 @@
  */
 	__HEAD
 ENTRY(stext)
+
+#ifdef CONFIG_MSTAR_AMBER3
+	mov r1, #0x1
+#elif defined(CONFIG_MSTAR_EDISON)
+	mov r1, #0x2
+#endif
+
 	setmode	PSR_F_BIT | PSR_I_BIT | SVC_MODE, r9 @ ensure svc mode
+#ifdef CONFIG_ARCH_CCEP
+#ifdef CONFIG_ARCH_CCEP_SOC_CA9
+	bl      v7_inv_dcache_all               @ Samsung CCEP
+#endif
+
+#include <asm/mach-types.h>     /* by tukho.kim */
+        ldr     r1, =machine_arch_type          @by tukho.kim, not need r1 machine number
+#endif
 						@ and irqs disabled
 	mrc	p15, 0, r9, c0, c0		@ get processor id
 	bl	__lookup_processor_type		@ r5=procinfo r9=cpuid
@@ -291,6 +306,37 @@ ENTRY(secondary_startup)
 	 * as it has already been validated by the primary processor.
 	 */
 	setmode	PSR_F_BIT | PSR_I_BIT | SVC_MODE, r9
+#ifdef CONFIG_ARCH_CCEP
+#if 0
+	@ fast lookup disable
+	mrc	p15, 0, r1, c15, c0, 1
+	orr	r1, r1, #0x40
+	mcr	p15, 0, r1, c15, c0, 1
+100:
+#endif
+	/*
+	* Invalidate L1 I/D
+	*/
+	mov	r0, #0                  @ set up for MCR
+	mcr	p15, 0, r0, c8, c7, 0   @ invalidate TLBs
+	mcr	p15, 0, r0, c7, c5, 0   @ invalidate icache
+
+	/*
+	* disable MMU stuff and caches
+	*/
+	mrc	p15, 0, r0, c1, c0, 0
+	bic	r0, r0, #0x00002000     @ clear bits 13 (--V-)
+	bic	r0, r0, #0x00000007     @ clear bits 2:0 (-CAM)
+	orr	r0, r0, #0x00000002     @ set bit 1 (--A-) Align
+	orr	r0, r0, #0x00001800     @ set bit 12 (ZI--) BTB
+	mcr	p15, 0, r0, c1, c0, 0
+#ifdef CONFIG_ARCH_CCEP_SOC_CA9
+	bl      v7_inv_dcache_all               @ Samsung CCEP
+#endif
+
+#include <asm/mach-types.h>     /* by tukho.kim */
+        ldr     r1, =machine_arch_type          @by tukho.kim, not need r1 machine number
+#endif
 	mrc	p15, 0, r9, c0, c0		@ get processor id
 	bl	__lookup_processor_type
 	movs	r10, r5				@ invalid processor?

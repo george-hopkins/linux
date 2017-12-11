@@ -259,5 +259,7 @@ static inline void refresh_zone_stat_thresholds(void) { }
 #endif		/* CONFIG_SMP */
 
 extern const char * const vmstat_text[];
-
+#ifdef CONFIG_CMA_DEBUG
+extern const char * const migratetype_names[];
+#endif
 #endif /* _LINUX_VMSTAT_H */

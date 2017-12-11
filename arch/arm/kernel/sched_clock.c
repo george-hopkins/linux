@@ -18,14 +18,39 @@ static void sched_clock_poll(unsigned long wrap_ticks);
 static DEFINE_TIMER(sched_clock_timer, sched_clock_poll, 0, 0);
 static void (*sched_clock_update_fn)(void);
 
+
+#if defined(CONFIG_MSTAR_AMBER3) || defined(CONFIG_MSTAR_EDISON)
+#ifdef CONFIG_ARCH_SCHED_CLOCK
+static unsigned long long notrace default_sched_clock(void)
+{
+	return (unsigned long long)(jiffies - INITIAL_JIFFIES)
+					* (NSEC_PER_SEC / HZ);
+}
+
+static unsigned long long __read_mostly (*sched_clock_fn)(void) = default_sched_clock;
+
+unsigned long long notrace sched_clock(void)
+{
+	return sched_clock_fn();
+}
+#endif
+#endif
+
+
 static void sched_clock_poll(unsigned long wrap_ticks)
 {
 	mod_timer(&sched_clock_timer, round_jiffies(jiffies + wrap_ticks));
 	sched_clock_update_fn();
 }
 
+#if defined(CONFIG_MSTAR_AMBER3) || defined(CONFIG_MSTAR_EDISON)
+void __init init_arch_sched_clock(struct clock_data *cd, void (*update)(void),
+	unsigned long long (*arch_sched_clock_fn)(void),
+	unsigned int clock_bits, unsigned long rate)
+#else
 void __init init_sched_clock(struct clock_data *cd, void (*update)(void),
 	unsigned int clock_bits, unsigned long rate)
+#endif
 {
 	unsigned long r, w;
 	u64 res, wrap;

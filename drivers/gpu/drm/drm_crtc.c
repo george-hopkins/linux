@@ -1656,6 +1656,41 @@ out:
 	mutex_unlock(&dev->mode_config.mutex);
 	return ret;
 }
+/* Original addfb only supported RGB formats, so figure out which one */
+uint32_t drm_mode_legacy_fb_format(uint32_t bpp, uint32_t depth)
+{
+	uint32_t fmt;
+
+	switch (bpp) {
+	case 8:
+		fmt = DRM_FORMAT_RGB332;
+		break;
+	case 16:
+		if (depth == 15)
+			fmt = DRM_FORMAT_XRGB1555;
+		else
+			fmt = DRM_FORMAT_RGB565;
+		break;
+	case 24:
+		fmt = DRM_FORMAT_RGB888;
+		break;
+	case 32:
+		if (depth == 24)
+			fmt = DRM_FORMAT_XRGB8888;
+		else if (depth == 30)
+			fmt = DRM_FORMAT_XRGB2101010;
+		else
+			fmt = DRM_FORMAT_ARGB8888;
+		break;
+	default:
+		DRM_ERROR("bad bpp, assuming x8r8g8b8 pixel format\n");
+		fmt = DRM_FORMAT_XRGB8888;
+		break;
+	}
+
+	return fmt;
+}
+EXPORT_SYMBOL(drm_mode_legacy_fb_format);
 
 /**
  * drm_mode_addfb - add an FB to the graphics configuration
@@ -1677,10 +1712,184 @@ out:
 int drm_mode_addfb(struct drm_device *dev,
 		   void *data, struct drm_file *file_priv)
 {
-	struct drm_mode_fb_cmd *r = data;
+	struct drm_mode_fb_cmd *or = data;
+	struct drm_mode_fb_cmd2 r = {};
 	struct drm_mode_config *config = &dev->mode_config;
 	struct drm_framebuffer *fb;
 	int ret = 0;
+
+	/* Use new struct with format internally */
+	r.fb_id = or->fb_id;
+	r.width = or->width;
+	r.height = or->height;
+	r.pitches[0] = or->pitch;
+	r.pixel_format = drm_mode_legacy_fb_format(or->bpp, or->depth);
+	r.handles[0] = or->handle;
+
+	if (!drm_core_check_feature(dev, DRIVER_MODESET))
+		return -EINVAL;
+
+	if ((config->min_width > r.width) || (r.width > config->max_width))
+		return -EINVAL;
+
+	if ((config->min_height > r.height) || (r.height > config->max_height))
+		return -EINVAL;
+
+	mutex_lock(&dev->mode_config.mutex);
+
+	/* TODO check buffer is sufficiently large */
+	/* TODO setup destructor callback */
+
+	fb = dev->mode_config.funcs->fb_create(dev, file_priv, &r);
+	if (IS_ERR(fb)) {
+		DRM_DEBUG_KMS("could not create framebuffer\n");
+		ret = PTR_ERR(fb);
+		goto out;
+	}
+
+	or->fb_id = fb->base.id;
+	list_add(&fb->filp_head, &file_priv->fbs);
+	DRM_DEBUG_KMS("[FB:%d]\n", fb->base.id);
+
+out:
+	mutex_unlock(&dev->mode_config.mutex);
+	return ret;
+}
+
+static int format_check(const struct drm_mode_fb_cmd2 *r)
+{
+	uint32_t format = r->pixel_format & ~DRM_FORMAT_BIG_ENDIAN;
+
+	switch (format) {
+	case DRM_FORMAT_C8:
+	case DRM_FORMAT_RGB332:
+	case DRM_FORMAT_BGR233:
+	case DRM_FORMAT_XRGB4444:
+	case DRM_FORMAT_XBGR4444:
+	case DRM_FORMAT_RGBX4444:
+	case DRM_FORMAT_BGRX4444:
+	case DRM_FORMAT_ARGB4444:
+	case DRM_FORMAT_ABGR4444:
+	case DRM_FORMAT_RGBA4444:
+	case DRM_FORMAT_BGRA4444:
+	case DRM_FORMAT_XRGB1555:
+	case DRM_FORMAT_XBGR1555:
+	case DRM_FORMAT_RGBX5551:
+	case DRM_FORMAT_BGRX5551:
+	case DRM_FORMAT_ARGB1555:
+	case DRM_FORMAT_ABGR1555:
+	case DRM_FORMAT_RGBA5551:
+	case DRM_FORMAT_BGRA5551:
+	case DRM_FORMAT_RGB565:
+	case DRM_FORMAT_BGR565:
+	case DRM_FORMAT_RGB888:
+	case DRM_FORMAT_BGR888:
+	case DRM_FORMAT_XRGB8888:
+	case DRM_FORMAT_XBGR8888:
+	case DRM_FORMAT_RGBX8888:
+	case DRM_FORMAT_BGRX8888:
+	case DRM_FORMAT_ARGB8888:
+	case DRM_FORMAT_ABGR8888:
+	case DRM_FORMAT_RGBA8888:
+	case DRM_FORMAT_BGRA8888:
+	case DRM_FORMAT_XRGB2101010:
+	case DRM_FORMAT_XBGR2101010:
+	case DRM_FORMAT_RGBX1010102:
+	case DRM_FORMAT_BGRX1010102:
+	case DRM_FORMAT_ARGB2101010:
+	case DRM_FORMAT_ABGR2101010:
+	case DRM_FORMAT_RGBA1010102:
+	case DRM_FORMAT_BGRA1010102:
+	case DRM_FORMAT_YUYV:
+	case DRM_FORMAT_YVYU:
+	case DRM_FORMAT_UYVY:
+	case DRM_FORMAT_VYUY:
+	case DRM_FORMAT_AYUV:
+	case DRM_FORMAT_NV12:
+	case DRM_FORMAT_NV21:
+	case DRM_FORMAT_NV16:
+	case DRM_FORMAT_NV61:
+	case DRM_FORMAT_YUV410:
+	case DRM_FORMAT_YVU410:
+	case DRM_FORMAT_YUV411:
+	case DRM_FORMAT_YVU411:
+	case DRM_FORMAT_YUV420:
+	case DRM_FORMAT_YVU420:
+	case DRM_FORMAT_YUV422:
+	case DRM_FORMAT_YVU422:
+	case DRM_FORMAT_YUV444:
+	case DRM_FORMAT_YVU444:
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
+static int framebuffer_check(const struct drm_mode_fb_cmd2 *r)
+{
+	int ret, hsub, vsub, num_planes, i;
+
+	ret = format_check(r);
+	if (ret) {
+		DRM_DEBUG_KMS("bad framebuffer format 0x%08x\n", r->pixel_format);
+		return ret;
+	}
+
+	hsub = drm_format_horz_chroma_subsampling(r->pixel_format);
+	vsub = drm_format_vert_chroma_subsampling(r->pixel_format);
+	num_planes = drm_format_num_planes(r->pixel_format);
+
+	if (r->width == 0 || r->width % hsub) {
+		DRM_DEBUG_KMS("bad framebuffer width %u\n", r->height);
+		return -EINVAL;
+	}
+
+	if (r->height == 0 || r->height % vsub) {
+		DRM_DEBUG_KMS("bad framebuffer height %u\n", r->height);
+		return -EINVAL;
+	}
+
+	for (i = 0; i < num_planes; i++) {
+		unsigned int width = r->width / (i != 0 ? hsub : 1);
+
+		if (!r->handles[i]) {
+			DRM_DEBUG_KMS("no buffer object handle for plane %d\n", i);
+			return -EINVAL;
+		}
+
+		if (r->pitches[i] < drm_format_plane_cpp(r->pixel_format, i) * width) {
+			DRM_DEBUG_KMS("bad pitch %u for plane %d\n", r->pitches[i], i);
+			return -EINVAL;
+		}
+	}
+
+	return 0;
+}
+
+/**
+ * drm_mode_addfb2 - add an FB to the graphics configuration
+ * @inode: inode from the ioctl
+ * @filp: file * from the ioctl
+ * @cmd: cmd from ioctl
+ * @arg: arg from ioctl
+ *
+ * LOCKING:
+ * Takes mode config lock.
+ *
+ * Add a new FB to the specified CRTC, given a user request with format.
+ *
+ * Called by the user via ioctl.
+ *
+ * RETURNS:
+ * Zero on success, errno on failure.
+ */
+int drm_mode_addfb2(struct drm_device *dev,
+		    void *data, struct drm_file *file_priv)
+{
+	struct drm_mode_fb_cmd2 *r = data;
+	struct drm_mode_config *config = &dev->mode_config;
+	struct drm_framebuffer *fb;
+	int ret;
 
 	if (!drm_core_check_feature(dev, DRIVER_MODESET))
 		return -EINVAL;
@@ -1693,6 +1902,10 @@ int drm_mode_addfb(struct drm_device *dev,
 		DRM_ERROR("mode new framebuffer height not within limits\n");
 		return -EINVAL;
 	}
+
+	ret = framebuffer_check(r);
+	if (ret)
+		return ret;
 
 	mutex_lock(&dev->mode_config.mutex);
 
@@ -2751,9 +2964,10 @@ int drm_mode_create_dumb_ioctl(struct drm_device *dev,
 			       void *data, struct drm_file *file_priv)
 {
 	struct drm_mode_create_dumb *args = data;
-
-	if (!dev->driver->dumb_create)
+	if (!dev->driver->dumb_create) {
+		printk("%s--------------%d\n",__FUNCTION__, __LINE__);
 		return -ENOSYS;
+	}
 	return dev->driver->dumb_create(file_priv, dev, args);
 }
 
@@ -2779,3 +2993,206 @@ int drm_mode_destroy_dumb_ioctl(struct drm_device *dev,
 
 	return dev->driver->dumb_destroy(file_priv, dev, args->handle);
 }
+/*
+ * Just need to support RGB formats here for compat with code that doesn't
+ * use pixel formats directly yet.
+ */
+void drm_fb_get_bpp_depth(uint32_t format, unsigned int *depth,
+			  int *bpp)
+{
+	switch (format) {
+	case DRM_FORMAT_RGB332:
+	case DRM_FORMAT_BGR233:
+		*depth = 8;
+		*bpp = 8;
+		break;
+	case DRM_FORMAT_XRGB1555:
+	case DRM_FORMAT_XBGR1555:
+	case DRM_FORMAT_RGBX5551:
+	case DRM_FORMAT_BGRX5551:
+	case DRM_FORMAT_ARGB1555:
+	case DRM_FORMAT_ABGR1555:
+	case DRM_FORMAT_RGBA5551:
+	case DRM_FORMAT_BGRA5551:
+		*depth = 15;
+		*bpp = 16;
+		break;
+	case DRM_FORMAT_RGB565:
+	case DRM_FORMAT_BGR565:
+		*depth = 16;
+		*bpp = 16;
+		break;
+	case DRM_FORMAT_RGB888:
+	case DRM_FORMAT_BGR888:
+		*depth = 24;
+		*bpp = 24;
+		break;
+	case DRM_FORMAT_XRGB8888:
+	case DRM_FORMAT_XBGR8888:
+	case DRM_FORMAT_RGBX8888:
+	case DRM_FORMAT_BGRX8888:
+		*depth = 24;
+		*bpp = 32;
+		break;
+	case DRM_FORMAT_XRGB2101010:
+	case DRM_FORMAT_XBGR2101010:
+	case DRM_FORMAT_RGBX1010102:
+	case DRM_FORMAT_BGRX1010102:
+	case DRM_FORMAT_ARGB2101010:
+	case DRM_FORMAT_ABGR2101010:
+	case DRM_FORMAT_RGBA1010102:
+	case DRM_FORMAT_BGRA1010102:
+		*depth = 30;
+		*bpp = 32;
+		break;
+	case DRM_FORMAT_ARGB8888:
+	case DRM_FORMAT_ABGR8888:
+	case DRM_FORMAT_RGBA8888:
+	case DRM_FORMAT_BGRA8888:
+		*depth = 32;
+		*bpp = 32;
+		break;
+	default:
+		DRM_DEBUG_KMS("unsupported pixel format\n");
+		*depth = 0;
+		*bpp = 0;
+		break;
+	}
+}
+EXPORT_SYMBOL(drm_fb_get_bpp_depth);
+
+/**
+ * drm_format_num_planes - get the number of planes for format
+ * @format: pixel format (DRM_FORMAT_*)
+ *
+ * RETURNS:
+ * The number of planes used by the specified pixel format.
+ */
+int drm_format_num_planes(uint32_t format)
+{
+	switch (format) {
+	case DRM_FORMAT_YUV410:
+	case DRM_FORMAT_YVU410:
+	case DRM_FORMAT_YUV411:
+	case DRM_FORMAT_YVU411:
+	case DRM_FORMAT_YUV420:
+	case DRM_FORMAT_YVU420:
+	case DRM_FORMAT_YUV422:
+	case DRM_FORMAT_YVU422:
+	case DRM_FORMAT_YUV444:
+	case DRM_FORMAT_YVU444:
+		return 3;
+	case DRM_FORMAT_NV12:
+	case DRM_FORMAT_NV21:
+	case DRM_FORMAT_NV16:
+	case DRM_FORMAT_NV61:
+		return 2;
+	default:
+		return 1;
+	}
+}
+EXPORT_SYMBOL(drm_format_num_planes);
+/**
+ * drm_format_plane_cpp - determine the bytes per pixel value
+ * @format: pixel format (DRM_FORMAT_*)
+ * @plane: plane index
+ *
+ * RETURNS:
+ * The bytes per pixel value for the specified plane.
+ */
+int drm_format_plane_cpp(uint32_t format, int plane)
+{
+	unsigned int depth;
+	int bpp;
+
+	if (plane >= drm_format_num_planes(format))
+		return 0;
+
+	switch (format) {
+	case DRM_FORMAT_YUYV:
+	case DRM_FORMAT_YVYU:
+	case DRM_FORMAT_UYVY:
+	case DRM_FORMAT_VYUY:
+		return 2;
+	case DRM_FORMAT_NV12:
+	case DRM_FORMAT_NV21:
+	case DRM_FORMAT_NV16:
+	case DRM_FORMAT_NV61:
+		return plane ? 2 : 1;
+	case DRM_FORMAT_YUV410:
+	case DRM_FORMAT_YVU410:
+	case DRM_FORMAT_YUV411:
+	case DRM_FORMAT_YVU411:
+	case DRM_FORMAT_YUV420:
+	case DRM_FORMAT_YVU420:
+	case DRM_FORMAT_YUV422:
+	case DRM_FORMAT_YVU422:
+	case DRM_FORMAT_YUV444:
+	case DRM_FORMAT_YVU444:
+		return 1;
+	default:
+		drm_fb_get_bpp_depth(format, &depth, &bpp);
+		return bpp >> 3;
+	}
+}
+EXPORT_SYMBOL(drm_format_plane_cpp);
+
+/**
+ * drm_format_horz_chroma_subsampling - get the horizontal chroma subsampling factor
+ * @format: pixel format (DRM_FORMAT_*)
+ *
+ * RETURNS:
+ * The horizontal chroma subsampling factor for the
+ * specified pixel format.
+ */
+int drm_format_horz_chroma_subsampling(uint32_t format)
+{
+	switch (format) {
+	case DRM_FORMAT_YUV411:
+	case DRM_FORMAT_YVU411:
+	case DRM_FORMAT_YUV410:
+	case DRM_FORMAT_YVU410:
+		return 4;
+	case DRM_FORMAT_YUYV:
+	case DRM_FORMAT_YVYU:
+	case DRM_FORMAT_UYVY:
+	case DRM_FORMAT_VYUY:
+	case DRM_FORMAT_NV12:
+	case DRM_FORMAT_NV21:
+	case DRM_FORMAT_NV16:
+	case DRM_FORMAT_NV61:
+	case DRM_FORMAT_YUV422:
+	case DRM_FORMAT_YVU422:
+	case DRM_FORMAT_YUV420:
+	case DRM_FORMAT_YVU420:
+		return 2;
+	default:
+		return 1;
+	}
+}
+EXPORT_SYMBOL(drm_format_horz_chroma_subsampling);
+
+/**
+ * drm_format_vert_chroma_subsampling - get the vertical chroma subsampling factor
+ * @format: pixel format (DRM_FORMAT_*)
+ *
+ * RETURNS:
+ * The vertical chroma subsampling factor for the
+ * specified pixel format.
+ */
+int drm_format_vert_chroma_subsampling(uint32_t format)
+{
+	switch (format) {
+	case DRM_FORMAT_YUV410:
+	case DRM_FORMAT_YVU410:
+		return 4;
+	case DRM_FORMAT_YUV420:
+	case DRM_FORMAT_YVU420:
+	case DRM_FORMAT_NV12:
+	case DRM_FORMAT_NV21:
+		return 2;
+	default:
+		return 1;
+	}
+}
+EXPORT_SYMBOL(drm_format_vert_chroma_subsampling);

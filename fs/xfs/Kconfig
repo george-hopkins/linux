@@ -80,3 +80,24 @@ config XFS_DEBUG
 	  not useful unless you are debugging a particular problem.
 
 	  Say N unless you are an XFS developer, or you play one on TV.
+
+config XFS_FS_TRUNCATE_RANGE
+        bool "XFS File system truncate range support"
+        depends on XFS_FS
+	select XFS_POSIX_ACL
+        default y
+        help
+         Additional function of truncate range supported. User can cut off the file
+         from start offset to end offset by system call. The remained portions of
+         the file is combined after cutting is done.
+
+config XFS_FS_SPLIT
+        bool "XFS File system split support"
+        depends on XFS_FS
+	select XFS_POSIX_ACL
+        default y
+        help
+         Additional function of split supported. User can split a file in two parts
+         by specifying a offset in original file and a name for the new file. The data from
+         the offset specified by the user to the end of file is moved to the new file.
+

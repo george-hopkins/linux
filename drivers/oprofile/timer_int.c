@@ -20,13 +20,51 @@
 
 #include "oprof.h"
 
+
+#ifdef CONFIG_ADVANCE_OPROFILE
+#include <kdebugd/kdebugd.h>
+#endif /* CONFIG_ADVANCE_OPROFILE */
+
+#ifdef CONFIG_ADVANCE_OPROFILE
+static atomic_t g_aop_pc_sample_count;
+#endif /* CONFIG_ADVANCE_OPROFILE */
+
+
 static DEFINE_PER_CPU(struct hrtimer, oprofile_hrtimer);
 static int ctr_running;
+
+
+#ifdef CONFIG_ADVANCE_OPROFILE
+/* get the vale of pc sample Count */
+int aop_get_pc_sample_count(void)
+{
+      return atomic_read(&g_aop_pc_sample_count);
+}
+
+#ifdef CONFIG_CACHE_ANALYZER
+void aop_inc_pc_sample_count(void)
+{
+	atomic_inc(&g_aop_pc_sample_count);
+}
+#endif
+
+/* reset the PC sample count to zero */
+void  aop_reset_pc_sample_count(void)
+{
+      atomic_set(&g_aop_pc_sample_count, 0);
+}
+#endif /* CONFIG_ADVANCE_OPROFILE */
+
 
 static enum hrtimer_restart oprofile_hrtimer_notify(struct hrtimer *hrtimer)
 {
 	oprofile_add_sample(get_irq_regs(), 0);
 	hrtimer_forward_now(hrtimer, ns_to_ktime(TICK_NSEC));
+
+#ifdef CONFIG_ADVANCE_OPROFILE
+	atomic_inc(&g_aop_pc_sample_count);
+#endif/* CONFIG_ADVANCE_OPROFILE */
+
 	return HRTIMER_RESTART;
 }
 

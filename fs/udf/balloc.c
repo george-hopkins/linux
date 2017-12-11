@@ -32,6 +32,8 @@
 #define udf_test_bit	test_bit_le
 #define udf_find_next_one_bit	find_next_bit_le
 
+void udf_release_data(struct buffer_head *bh);
+
 static int read_block_bitmap(struct super_block *sb,
 			     struct udf_bitmap *bitmap, unsigned int block,
 			     unsigned long bitmap_nr)
@@ -125,9 +127,9 @@ static void udf_bitmap_free_blocks(struct super_block *sb,
 	partmap = &sbi->s_partmaps[bloc->partitionReferenceNum];
 	if (bloc->logicalBlockNum + count < count ||
 	    (bloc->logicalBlockNum + count) > partmap->s_partition_len) {
-		udf_debug("%d < %d || %d + %d > %d\n",
+		/*udf_debug("%d < %d || %d + %d > %d\n",
 			  bloc->logicalBlockNum, 0, bloc->logicalBlockNum,
-			  count, partmap->s_partition_len);
+			  count, partmap->s_partition_len);*/
 		goto error_return;
 	}
 
@@ -429,7 +431,7 @@ static void udf_table_free_blocks(struct super_block *sb,
 		if (epos.bh != oepos.bh) {
 			i = -1;
 			oepos.block = epos.block;
-			brelse(oepos.bh);
+			udf_release_data(oepos.bh);
 			get_bh(epos.bh);
 			oepos.bh = epos.bh;
 			oepos.offset = 0;
@@ -466,8 +468,8 @@ static void udf_table_free_blocks(struct super_block *sb,
 		else if (iinfo->i_alloc_type == ICBTAG_FLAG_AD_LONG)
 			adsize = sizeof(struct long_ad);
 		else {
-			brelse(oepos.bh);
-			brelse(epos.bh);
+			udf_release_data(oepos.bh);
+			udf_release_data(epos.bh);
 			goto error_return;
 		}
 
@@ -475,7 +477,7 @@ static void udf_table_free_blocks(struct super_block *sb,
 			unsigned char *sptr, *dptr;
 			int loffset;
 
-			brelse(oepos.bh);
+			udf_release_data(oepos.bh);
 			oepos = epos;
 
 			/* Steal a block from the extent being free'd */
@@ -486,7 +488,7 @@ static void udf_table_free_blocks(struct super_block *sb,
 			epos.bh = udf_tread(sb,
 					udf_get_lb_pblock(sb, &epos.block, 0));
 			if (!epos.bh) {
-				brelse(oepos.bh);
+				udf_release_data(oepos.bh);
 				goto error_return;
 			}
 			aed = (struct allocExtDesc *)(epos.bh->b_data);
@@ -570,8 +572,8 @@ static void udf_table_free_blocks(struct super_block *sb,
 		}
 	}
 
-	brelse(epos.bh);
-	brelse(oepos.bh);
+	udf_release_data(epos.bh);
+	udf_release_data(oepos.bh);
 
 error_return:
 	mutex_unlock(&sbi->s_alloc_mutex);
@@ -632,7 +634,7 @@ static int udf_table_prealloc_blocks(struct super_block *sb,
 		alloc_count = 0;
 	}
 
-	brelse(epos.bh);
+	udf_release_data(epos.bh);
 
 	if (alloc_count)
 		udf_add_free_space(sb, partition, -alloc_count);
@@ -692,7 +694,7 @@ static int udf_table_new_block(struct super_block *sb,
 		if (nspread < spread) {
 			spread = nspread;
 			if (goal_epos.bh != epos.bh) {
-				brelse(goal_epos.bh);
+				udf_release_data(goal_epos.bh);
 				goal_epos.bh = epos.bh;
 				get_bh(goal_epos.bh);
 			}
@@ -703,10 +705,10 @@ static int udf_table_new_block(struct super_block *sb,
 		}
 	}
 
-	brelse(epos.bh);
+	udf_release_data(epos.bh);
 
 	if (spread == 0xFFFFFFFF) {
-		brelse(goal_epos.bh);
+		udf_release_data(goal_epos.bh);
 		mutex_unlock(&sbi->s_alloc_mutex);
 		return 0;
 	}
@@ -724,7 +726,7 @@ static int udf_table_new_block(struct super_block *sb,
 		udf_write_aext(table, &goal_epos, &goal_eloc, goal_elen, 1);
 	else
 		udf_delete_aext(table, goal_epos, goal_eloc, goal_elen);
-	brelse(goal_epos.bh);
+	udf_release_data(goal_epos.bh);
 
 	udf_add_free_space(sb, partition, -1);
 

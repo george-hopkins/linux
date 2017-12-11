@@ -100,6 +100,12 @@ int elv_rq_merge_ok(struct request *rq, struct bio *bio)
 	if (rq->rq_disk != bio->bi_bdev->bd_disk || rq->special)
 		return 0;
 
+#if defined (CONFIG_BD_CACHE_ENABLED)
+	/* Cannot merge directIO to non-directO requests */
+	if (test_bit(__REQ_DIRECTIO, (unsigned long *)&rq->cmd_flags) !=
+			test_bit(BIO_DIRECT, (unsigned long *)&bio->bi_flags) )
+		return 0;
+#endif
 	/*
 	 * only merge integrity protected bio into ditto rq
 	 */

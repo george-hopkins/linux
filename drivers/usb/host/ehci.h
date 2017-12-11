@@ -168,6 +168,9 @@ struct ehci_hcd {			/* one per controller */
 	 * OTG controllers and transceivers need software interaction
 	 */
 	struct otg_transceiver	*transceiver;
+#ifdef CONFIG_NVT_NT72568
+	void __iomem		*apbs;		/* device memory/io */
+#endif
 };
 
 /* convert between an HCD pointer and the corresponding EHCI_HCD */
@@ -364,8 +367,17 @@ struct ehci_qh {
 #define	QH_STATE_COMPLETING	5		/* don't touch token.HALT */
 
 	u8			xacterrs;	/* XactErr retry counter */
-#define	QH_XACTERR_MAX		32		/* XactErr retry limit */
-
+#if defined (CONFIG_NVT_NT72568)
+#define	QH_XACTERR_MAX		2		/* XactErr retry limit */
+#elif defined (SAMSUNG_PATCH_WITH_USB_ENHANCEMENT)
+	/*
+         * 20121221, BugFIX for HUB disconnect when FS_HS split transaction
+         * Original retry count limit is 32
+	 */
+#define	QH_XACTERR_MAX		8		/* XactErr retry limit */
+#else
+#define QH_XACTERR_MAX          32               /* XactErr retry limit */
+#endif
 	/* periodic schedule info */
 	u8			usecs;		/* intr bandwidth */
 	u8			gap_uf;		/* uframes split/csplit gap */
@@ -555,6 +567,35 @@ struct ehci_fstn {
 
 /*-------------------------------------------------------------------------*/
 
+#ifdef CONFIG_NVT_NT72568
+
+/*
+ * Some EHCI controllers have a Transaction Translator built into the
+ * root hub. This is a non-standard feature.  Each controller will need
+ * to add code to the following inline functions, and call them as
+ * needed (mostly in root hub code).
+ */
+
+#define	ehci_is_TDI(e)			(ehci_to_hcd(e)->has_tt)
+
+/* Returns the speed of a device attached to a port on the root hub. */
+static inline unsigned int
+ehci_port_speed(struct ehci_hcd *ehci, unsigned int portsc)
+{
+	if (ehci_is_TDI(ehci)) {
+		switch ((portsc>>22)&3) {
+		case 0:
+			return 0;
+		case 1:
+			return USB_PORT_STAT_LOW_SPEED;
+		case 2:
+		default:
+			return USB_PORT_STAT_HIGH_SPEED;
+		}
+	}
+	return USB_PORT_STAT_HIGH_SPEED;
+}
+#else
 #ifdef CONFIG_USB_EHCI_ROOT_HUB_TT
 
 /*
@@ -590,6 +631,8 @@ ehci_port_speed(struct ehci_hcd *ehci, unsigned int portsc)
 
 #define	ehci_port_speed(ehci, portsc)	USB_PORT_STAT_HIGH_SPEED
 #endif
+#endif
+
 
 /*-------------------------------------------------------------------------*/
 
@@ -739,6 +782,7 @@ static inline u32 hc32_to_cpup (const struct ehci_hcd *ehci, const __hc32 *x)
 
 /*-------------------------------------------------------------------------*/
 
+#ifndef CONFIG_NVT_NT72568
 #ifdef CONFIG_PCI
 
 /* For working around the MosChip frame-index-register bug */
@@ -752,7 +796,12 @@ static inline unsigned ehci_read_frame_index(struct ehci_hcd *ehci)
 }
 
 #endif
-
+#else
+static inline unsigned ehci_read_frame_index(struct ehci_hcd *ehci)
+{
+	return ehci_readl(ehci, &ehci->regs->frame_index);
+}
+#endif
 /*-------------------------------------------------------------------------*/
 
 #ifndef DEBUG

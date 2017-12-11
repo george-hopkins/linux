@@ -395,6 +395,7 @@ int usb_stor_bulk_transfer_buf(struct us_data *us, unsigned int pipe,
 
 	US_DEBUGP("%s: xfer %u bytes\n", __func__, length);
 
+
 	/* fill and submit the URB */
 	usb_fill_bulk_urb(us->current_urb, us->pusb_dev, pipe, buf, length,
 		      usb_stor_blocking_completion, NULL);
@@ -1262,6 +1263,7 @@ static int usb_stor_reset_common(struct us_data *us,
 			5*HZ);
 	if (result < 0) {
 		US_DEBUGP("Soft reset failed: %d\n", result);
+
 		return result;
 	}
 

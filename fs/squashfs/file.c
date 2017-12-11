@@ -53,6 +53,14 @@
 #include "squashfs_fs_i.h"
 #include "squashfs.h"
 
+#ifdef CONFIG_SQUASHFS_READPAGES_ENABLE
+#define list_to_page(head) (list_entry((head)->prev, struct page, lru))
+#define list_to_page_index(pos,head,index) \
+				for(pos =list_entry((head)->prev, struct page, lru); pos->index != index;\
+					pos = list_entry((pos)->prev, struct page, lru))
+#endif
+
+
 /*
  * Locate cache slot in range [offset, index] for specified inode.  If
  * there's more than one return the slot closest to index.
@@ -370,6 +378,9 @@ static int read_blocklist(struct inode *inode, int index, u64 *block)
 	return le32_to_cpu(size);
 }
 
+#ifdef	CONFIG_SQUASHFS_DEBUGGER
+char last_file_name[256];
+#endif
 
 static int squashfs_readpage(struct file *file, struct page *page)
 {
@@ -387,6 +398,16 @@ static int squashfs_readpage(struct file *file, struct page *page)
 
 	TRACE("Entered squashfs_readpage, page index %lx, start block %llx\n",
 				page->index, squashfs_i(inode)->start);
+
+#ifdef	CONFIG_SQUASHFS_DEBUGGER
+	/* Save lastest access file */
+	if (file){ 
+		strncpy(last_file_name,
+			(file->f_path).dentry->d_name.name,
+			(file->f_path).dentry->d_name.len);
+		last_file_name[(file->f_path).dentry->d_name.len]='\0';
+	}
+#endif
 
 	if (page->index >= ((i_size_read(inode) + PAGE_CACHE_SIZE - 1) >>
 					PAGE_CACHE_SHIFT))
@@ -495,7 +516,50 @@ out:
 	return 0;
 }
 
+#ifdef CONFIG_SQUASHFS_READPAGES_ENABLE
+/*
+ * readpages implementation and Multi Core implementation
+ * for squashfs 
+ * 
+ */
+static int squashfs_readpages(struct file *filp, struct address_space *mapping,
+	struct list_head *pages, unsigned nr_pages)
+{
+	unsigned page_idx;
+	struct squashfs_sb_info *msblk = filp->f_path.dentry->d_inode->i_sb->s_fs_info;
+ 	unsigned int pages_per_block;	
+
+	pages_per_block = (msblk->block_size/(PAGE_CACHE_SIZE)); 	
+
+#ifdef DEBUG
+    if (filp)
+        printk(KERN_EMERG"[%d] nrpages:%d, File:%s\n",current->pid,
+           nr_pages,(filp->f_path).dentry->d_name.name);
+
+	printk(KERN_EMERG"[%d]%s %d %d Ino %lu \n",current->pid,__FUNCTION__,nr_pages,pages_per_block,filp->f_path.dentry->d_inode->i_ino);
+#endif
+	{
+		/* readpages Implementation */
+		for (page_idx = 0; page_idx < nr_pages; page_idx++) {
+				struct page *page = list_to_page(pages);
+				prefetchw(&page->flags);
+				list_del(&page->lru);
+				if (!add_to_page_cache(page, mapping,	page->index, GFP_KERNEL)) {
+					squashfs_readpage(filp, page);
+				}
+				page_cache_release(page);
+		}
+	}
+	
+	/*always return 0 as readpages either writes to a page or release it*/
+	return 0;
+}
+#endif
+
 
 const struct address_space_operations squashfs_aops = {
-	.readpage = squashfs_readpage
+	.readpage = squashfs_readpage,
+#ifdef CONFIG_SQUASHFS_READPAGES_ENABLE
+	.readpages = squashfs_readpages
+#endif
 };

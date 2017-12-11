@@ -64,6 +64,11 @@ NORET_TYPE void panic(const char * fmt, ...)
 	long i, i_next = 0;
 	int state = 0;
 
+#ifdef CONFIG_DTVLOGD
+	/* Synchronously flush the messages remaining in dlog buffer */
+	do_dtvlog(5, NULL, 0);
+#endif
+
 	/*
 	 * It's possible to come here directly from a panic-assertion and
 	 * not have preempt disabled. Some functions called from here want

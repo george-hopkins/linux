@@ -34,10 +34,18 @@
  * Section 4.11.1.1:
  * "All components of all Command and Transfer TRBs shall be initialized to '0'"
  */
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_ADD_DYNAMIC_RING_BUFFER
+static struct xhci_segment *xhci_segment_alloc(struct xhci_hcd *xhci,
+					unsigned int cycle_state, gfp_t flags)
+#else
 static struct xhci_segment *xhci_segment_alloc(struct xhci_hcd *xhci, gfp_t flags)
+#endif
 {
 	struct xhci_segment *seg;
 	dma_addr_t	dma;
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_ADD_DYNAMIC_RING_BUFFER
+	int	i;
+#endif
 
 	seg = kzalloc(sizeof *seg, flags);
 	if (!seg)
@@ -53,6 +61,13 @@ static struct xhci_segment *xhci_segment_alloc(struct xhci_hcd *xhci, gfp_t flag
 			seg->trbs, (unsigned long long)dma);
 
 	memset(seg->trbs, 0, SEGMENT_SIZE);
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_ADD_DYNAMIC_RING_BUFFER
+	/* If the cycle state is 0, set the cycle bit to 1 for all the TRBs */
+	if (cycle_state == 0) {
+		for (i = 0; i < TRBS_PER_SEGMENT; i++)
+			seg->trbs[i].link.control |= TRB_CYCLE;
+	}
+#endif	
 	seg->dma = dma;
 	seg->next = NULL;
 
@@ -61,8 +76,10 @@ static struct xhci_segment *xhci_segment_alloc(struct xhci_hcd *xhci, gfp_t flag
 
 static void xhci_segment_free(struct xhci_hcd *xhci, struct xhci_segment *seg)
 {
+#ifndef SAMSUNG_PATCH_WITH_USB_XHCI_CODE_CLEANUP
 	if (!seg)
 		return;
+#endif
 	if (seg->trbs) {
 		xhci_dbg(xhci, "Freeing DMA segment at %p (virtual) 0x%llx (DMA)\n",
 				seg->trbs, (unsigned long long)seg->dma);
@@ -72,7 +89,21 @@ static void xhci_segment_free(struct xhci_hcd *xhci, struct xhci_segment *seg)
 	xhci_dbg(xhci, "Freeing priv segment structure at %p\n", seg);
 	kfree(seg);
 }
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_ADD_DYNAMIC_RING_BUFFER
+static void xhci_free_segments_for_ring(struct xhci_hcd *xhci,
+				struct xhci_segment *first)
+{
+	struct xhci_segment *seg;
 
+	seg = first->next;
+	while (seg != first) {
+		struct xhci_segment *next = seg->next;
+		xhci_segment_free(xhci, seg);
+		seg = next;
+	}
+	xhci_segment_free(xhci, first);
+}
+#endif
 /*
  * Make the prev segment point to the next segment.
  *
@@ -80,15 +111,25 @@ static void xhci_segment_free(struct xhci_hcd *xhci, struct xhci_segment *seg)
  * DMA address of the next segment.  The caller needs to set any Link TRB
  * related flags, such as End TRB, Toggle Cycle, and no snoop.
  */
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_ADD_DYNAMIC_RING_BUFFER
+static void xhci_link_segments(struct xhci_hcd *xhci, struct xhci_segment *prev,
+	        struct xhci_segment *next, enum xhci_ring_type type)
+
+#else
 static void xhci_link_segments(struct xhci_hcd *xhci, struct xhci_segment *prev,
 		struct xhci_segment *next, bool link_trbs, bool isoc)
+#endif
 {
 	u32 val;
 
 	if (!prev || !next)
 		return;
 	prev->next = next;
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_ADD_DYNAMIC_RING_BUFFER
+	if (type != TYPE_EVENT) {
+#else
 	if (link_trbs) {
+#endif
 		prev->trbs[TRBS_PER_SEGMENT-1].link.
 			segment_ptr = cpu_to_le64(next->dma);
 
@@ -98,8 +139,14 @@ static void xhci_link_segments(struct xhci_hcd *xhci, struct xhci_segment *prev,
 		val |= TRB_TYPE(TRB_LINK);
 		/* Always set the chain bit with 0.95 hardware */
 		/* Set chain bit for isoc rings on AMD 0.96 host */
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_ADD_DYNAMIC_RING_BUFFER		
 		if (xhci_link_trb_quirk(xhci) ||
-				(isoc && (xhci->quirks & XHCI_AMD_0x96_HOST)))
+				(type == TYPE_ISOC &&
+				 (xhci->quirks & XHCI_AMD_0x96_HOST)))
+#else
+		if (xhci_link_trb_quirk(xhci) ||
+						(isoc && (xhci->quirks & XHCI_AMD_0x96_HOST)))
+#endif				
 			val |= TRB_CHAIN;
 		prev->trbs[TRBS_PER_SEGMENT-1].link.control = cpu_to_le32(val);
 	}
@@ -108,7 +155,49 @@ static void xhci_link_segments(struct xhci_hcd *xhci, struct xhci_segment *prev,
 			(unsigned long long)next->dma);
 }
 
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_ADD_DYNAMIC_RING_BUFFER	
+/*
+ * Link the ring to the new segments.
+ * Set Toggle Cycle for the new ring if needed.
+ */
+static void xhci_link_rings(struct xhci_hcd *xhci, struct xhci_ring *ring,
+		struct xhci_segment *first, struct xhci_segment *last,
+		unsigned int num_segs)
+{
+	struct xhci_segment *next;
+
+	if (!ring || !first || !last)
+		return;
+
+	next = ring->enq_seg->next;
+	xhci_link_segments(xhci, ring->enq_seg, first, ring->type);
+	xhci_link_segments(xhci, last, next, ring->type);
+	ring->num_segs += num_segs;
+	ring->num_trbs_free += (TRBS_PER_SEGMENT - 1) * num_segs;
+
+	if (ring->type != TYPE_EVENT && ring->enq_seg == ring->last_seg) {
+		ring->last_seg->trbs[TRBS_PER_SEGMENT-1].link.control
+			&= ~cpu_to_le32(LINK_TOGGLE);
+		last->trbs[TRBS_PER_SEGMENT-1].link.control
+			|= cpu_to_le32(LINK_TOGGLE);
+		ring->last_seg = last;
+	}
+}
+#endif
+
 /* XXX: Do we need the hcd structure in all these functions? */
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_ADD_DYNAMIC_RING_BUFFER
+void xhci_ring_free(struct xhci_hcd *xhci, struct xhci_ring *ring)
+{
+	if (!ring)
+		return;
+
+	if (ring->first_seg)
+		xhci_free_segments_for_ring(xhci, ring->first_seg);
+
+	kfree(ring);
+}
+#else
 void xhci_ring_free(struct xhci_hcd *xhci, struct xhci_ring *ring)
 {
 	struct xhci_segment *seg;
@@ -130,8 +219,14 @@ void xhci_ring_free(struct xhci_hcd *xhci, struct xhci_ring *ring)
 	}
 	kfree(ring);
 }
+#endif
 
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_ADD_DYNAMIC_RING_BUFFER
+static void xhci_initialize_ring_info(struct xhci_ring *ring,
+					unsigned int cycle_state)
+#else
 static void xhci_initialize_ring_info(struct xhci_ring *ring)
+#endif
 {
 	/* The ring is empty, so the enqueue pointer == dequeue pointer */
 	ring->enqueue = ring->first_seg->trbs;
@@ -142,11 +237,58 @@ static void xhci_initialize_ring_info(struct xhci_ring *ring)
 	 * bit to handover ownership of the TRB, so PCS = 1.  The consumer must
 	 * compare CCS to the cycle bit to check ownership, so CCS = 1.
 	 */
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_ADD_DYNAMIC_RING_BUFFER
+	ring->cycle_state = cycle_state;
+#else
 	ring->cycle_state = 1;
+#endif	
 	/* Not necessary for new rings, but needed for re-initialized rings */
 	ring->enq_updates = 0;
 	ring->deq_updates = 0;
+
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_ADD_DYNAMIC_RING_BUFFER
+	/*
+	 * Each segment has a link TRB, and leave an extra TRB for SW
+	 * accounting purpose
+	 */
+	ring->num_trbs_free = ring->num_segs * (TRBS_PER_SEGMENT - 1) - 1;
+#endif	
 }
+
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_ADD_DYNAMIC_RING_BUFFER
+/* Allocate segments and link them for a ring */
+static int xhci_alloc_segments_for_ring(struct xhci_hcd *xhci,
+		struct xhci_segment **first, struct xhci_segment **last,
+		unsigned int num_segs, unsigned int cycle_state,
+		enum xhci_ring_type type, gfp_t flags)
+{
+	struct xhci_segment *prev;
+
+	prev = xhci_segment_alloc(xhci, cycle_state, flags);
+	if (!prev)
+		return -ENOMEM;
+	num_segs--;
+
+	*first = prev;
+	while (num_segs > 0) {
+		struct xhci_segment	*next;
+
+		next = xhci_segment_alloc(xhci, cycle_state, flags);
+		if (!next) {
+			xhci_free_segments_for_ring(xhci, *first);
+			return -ENOMEM;
+		}
+		xhci_link_segments(xhci, prev, next, type);
+
+		prev = next;
+		num_segs--;
+	}
+	xhci_link_segments(xhci, prev, *first, type);
+	*last = prev;
+
+	return 0;
+}
+#endif
 
 /**
  * Create a new ring with zero or more segments.
@@ -155,6 +297,44 @@ static void xhci_initialize_ring_info(struct xhci_ring *ring)
  * Set the end flag and the cycle toggle bit on the last segment.
  * See section 4.9.1 and figures 15 and 16.
  */
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_ADD_DYNAMIC_RING_BUFFER
+static struct xhci_ring *xhci_ring_alloc(struct xhci_hcd *xhci,
+		unsigned int num_segs, unsigned int cycle_state,
+		enum xhci_ring_type type, gfp_t flags)
+{
+	struct xhci_ring	*ring;
+	int ret;
+
+	ring = kzalloc(sizeof *(ring), flags);
+	xhci_dbg(xhci, "Allocating ring at %p\n", ring);
+	if (!ring)
+		return NULL;
+
+	ring->num_segs = num_segs;
+	INIT_LIST_HEAD(&ring->td_list);
+	ring->type = type;
+	if (num_segs == 0)
+		return ring;
+
+	ret = xhci_alloc_segments_for_ring(xhci, &ring->first_seg,
+			&ring->last_seg, num_segs, cycle_state, type, flags);
+	if (ret)
+		goto fail;
+
+	/* Only event ring does not use link TRB */
+	if (type != TYPE_EVENT) {
+		/* See section 4.9.2.1 and 6.4.4.1 */
+		ring->last_seg->trbs[TRBS_PER_SEGMENT - 1].link.control |= 
+			cpu_to_le32(LINK_TOGGLE);
+	}
+	xhci_initialize_ring_info(ring, cycle_state);
+	return ring;
+
+fail:
+	xhci_ring_free(xhci, ring);
+	return NULL;
+}
+#else
 static struct xhci_ring *xhci_ring_alloc(struct xhci_hcd *xhci,
 		unsigned int num_segs, bool link_trbs, bool isoc, gfp_t flags)
 {
@@ -204,6 +384,7 @@ fail:
 	xhci_ring_free(xhci, ring);
 	return NULL;
 }
+#endif 
 
 void xhci_free_or_cache_endpoint_ring(struct xhci_hcd *xhci,
 		struct xhci_virt_device *virt_dev,
@@ -232,6 +413,33 @@ void xhci_free_or_cache_endpoint_ring(struct xhci_hcd *xhci,
 /* Zero an endpoint ring (except for link TRBs) and move the enqueue and dequeue
  * pointers to the beginning of the ring.
  */
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_ADD_DYNAMIC_RING_BUFFER
+static void xhci_reinit_cached_ring(struct xhci_hcd *xhci,
+			struct xhci_ring *ring, unsigned int cycle_state,
+			enum xhci_ring_type type)
+{
+	struct xhci_segment	*seg = ring->first_seg;
+	int i;
+
+	do {
+		memset(seg->trbs, 0,
+				sizeof(union xhci_trb)*TRBS_PER_SEGMENT);
+		if (cycle_state == 0) {
+			for (i = 0; i < TRBS_PER_SEGMENT; i++)
+				seg->trbs[i].link.control |= TRB_CYCLE;
+		}
+		/* All endpoint rings have link TRBs */
+		xhci_link_segments(xhci, seg, seg->next, type);
+		seg = seg->next;
+	} while (seg != ring->first_seg);
+	ring->type = type;
+	xhci_initialize_ring_info(ring, cycle_state);
+	/* td list should be empty since all URBs have been cancelled,
+	 * but just in case...
+	 */
+	INIT_LIST_HEAD(&ring->td_list);
+}
+#else 
 static void xhci_reinit_cached_ring(struct xhci_hcd *xhci,
 		struct xhci_ring *ring, bool isoc)
 {
@@ -249,6 +457,42 @@ static void xhci_reinit_cached_ring(struct xhci_hcd *xhci,
 	 */
 	INIT_LIST_HEAD(&ring->td_list);
 }
+#endif
+
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_ADD_DYNAMIC_RING_BUFFER
+/*
+ * Expand an existing ring.
+ * Look for a cached ring or allocate a new ring which has same segment numbers
+ * and link the two rings.
+ */
+int xhci_ring_expansion(struct xhci_hcd *xhci, struct xhci_ring *ring,
+				unsigned int num_trbs, gfp_t flags)
+{
+	struct xhci_segment	*first;
+	struct xhci_segment	*last;
+	unsigned int		num_segs;
+	unsigned int		num_segs_needed;
+	int			ret;
+
+	num_segs_needed = (num_trbs + (TRBS_PER_SEGMENT - 1) - 1) /
+				(TRBS_PER_SEGMENT - 1);
+
+	/* Allocate number of segments we needed, or double the ring size */
+	num_segs = ring->num_segs > num_segs_needed ?
+			ring->num_segs : num_segs_needed;
+
+	ret = xhci_alloc_segments_for_ring(xhci, &first, &last,
+			num_segs, ring->cycle_state, ring->type, flags);
+	if (ret)
+		return -ENOMEM;
+
+	xhci_link_rings(xhci, ring, first, last, num_segs);
+	xhci_dbg(xhci, "ring expansion succeed, now has %d segments\n",
+			ring->num_segs);
+
+	return 0;
+}
+#endif
 
 #define CTX_SIZE(_hcc) (HCC_64BYTE_CONTEXT(_hcc) ? 64 : 32)
 
@@ -543,8 +787,13 @@ struct xhci_stream_info *xhci_alloc_stream_info(struct xhci_hcd *xhci,
 	 * Stream 0 is reserved.
 	 */
 	for (cur_stream = 1; cur_stream < num_streams; cur_stream++) {
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_ADD_DYNAMIC_RING_BUFFER
+		stream_info->stream_rings[cur_stream] =
+			xhci_ring_alloc(xhci, 2, 1, TYPE_STREAM, mem_flags);
+#else
 		stream_info->stream_rings[cur_stream] =
 			xhci_ring_alloc(xhci, 1, true, false, mem_flags);
+#endif			
 		cur_ring = stream_info->stream_rings[cur_stream];
 		if (!cur_ring)
 			goto cleanup_rings;
@@ -769,7 +1018,11 @@ int xhci_alloc_virt_device(struct xhci_hcd *xhci, int slot_id,
 	}
 
 	/* Allocate endpoint 0 ring */
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_ADD_DYNAMIC_RING_BUFFER
+	dev->eps[0].ring = xhci_ring_alloc(xhci, 2, 1, TYPE_CTRL, flags);
+#else
 	dev->eps[0].ring = xhci_ring_alloc(xhci, 1, true, false, flags);
+#endif	
 	if (!dev->eps[0].ring)
 		goto fail;
 
@@ -1176,11 +1429,16 @@ int xhci_endpoint_init(struct xhci_hcd *xhci,
 	struct xhci_ring *ep_ring;
 	unsigned int max_packet;
 	unsigned int max_burst;
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_ADD_DYNAMIC_RING_BUFFER
+	enum xhci_ring_type type;
+#endif
 	u32 max_esit_payload;
 
 	ep_index = xhci_get_endpoint_index(&ep->desc);
 	ep_ctx = xhci_get_ep_ctx(xhci, virt_dev->in_ctx, ep_index);
-
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_ADD_DYNAMIC_RING_BUFFER
+	type = usb_endpoint_type(&ep->desc);
+#endif	
 	/* Set up the endpoint ring */
 	/*
 	 * Isochronous endpoint ring needs bigger size because one isoc URB
@@ -1188,12 +1446,17 @@ int xhci_endpoint_init(struct xhci_hcd *xhci,
 	 * ring.
 	 * This should be replaced with dynamic ring resizing in the future.
 	 */
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_ADD_DYNAMIC_RING_BUFFER
+	virt_dev->eps[ep_index].new_ring =
+		xhci_ring_alloc(xhci, 2, 1, type, mem_flags);
+#else
 	if (usb_endpoint_xfer_isoc(&ep->desc))
 		virt_dev->eps[ep_index].new_ring =
 			xhci_ring_alloc(xhci, 8, true, true, mem_flags);
 	else
 		virt_dev->eps[ep_index].new_ring =
 			xhci_ring_alloc(xhci, 1, true, false, mem_flags);
+#endif
 	if (!virt_dev->eps[ep_index].new_ring) {
 		/* Attempt to use the ring cache */
 		if (virt_dev->num_rings_cached == 0)
@@ -1202,8 +1465,13 @@ int xhci_endpoint_init(struct xhci_hcd *xhci,
 			virt_dev->ring_cache[virt_dev->num_rings_cached];
 		virt_dev->ring_cache[virt_dev->num_rings_cached] = NULL;
 		virt_dev->num_rings_cached--;
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_ADD_DYNAMIC_RING_BUFFER
+		xhci_reinit_cached_ring(xhci, virt_dev->eps[ep_index].new_ring,
+					1, type);
+#else		
 		xhci_reinit_cached_ring(xhci, virt_dev->eps[ep_index].new_ring,
 			usb_endpoint_xfer_isoc(&ep->desc) ? true : false);
+#endif
 	}
 	virt_dev->eps[ep_index].skip = false;
 	ep_ring = virt_dev->eps[ep_index].new_ring;
@@ -1479,6 +1747,12 @@ struct xhci_command *xhci_alloc_command(struct xhci_hcd *xhci,
 
 void xhci_urb_free_priv(struct xhci_hcd *xhci, struct urb_priv *urb_priv)
 {
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX 
+	if (urb_priv) {
+		kfree(urb_priv->td[0]);
+		kfree(urb_priv);
+		}
+#else
 	int last;
 
 	if (!urb_priv)
@@ -1489,8 +1763,8 @@ void xhci_urb_free_priv(struct xhci_hcd *xhci, struct urb_priv *urb_priv)
 		int	i;
 		for (i = 0; i <= last; i++)
 			kfree(urb_priv->td[i]);
-	}
-	kfree(urb_priv);
+		kfree(urb_priv);
+#endif	
 }
 
 void xhci_free_command(struct xhci_hcd *xhci,
@@ -1505,6 +1779,9 @@ void xhci_free_command(struct xhci_hcd *xhci,
 void xhci_mem_cleanup(struct xhci_hcd *xhci)
 {
 	struct pci_dev	*pdev = to_pci_dev(xhci_to_hcd(xhci)->self.controller);
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX 
+	struct xhci_cd  *cur_cd, *next_cd;
+#endif
 	int size;
 	int i;
 
@@ -1525,6 +1802,13 @@ void xhci_mem_cleanup(struct xhci_hcd *xhci)
 		xhci_ring_free(xhci, xhci->cmd_ring);
 	xhci->cmd_ring = NULL;
 	xhci_dbg(xhci, "Freed command ring\n");
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX 
+	list_for_each_entry_safe(cur_cd, next_cd,
+			&xhci->cancel_cmd_list, cancel_cmd_list) {
+		list_del(&cur_cd->cancel_cmd_list);
+		kfree(cur_cd);
+	}
+#endif
 
 	for (i = 1; i < MAX_HC_SLOTS; ++i)
 		xhci_free_virt_device(xhci, i);
@@ -2011,9 +2295,16 @@ int xhci_mem_init(struct xhci_hcd *xhci, gfp_t flags)
 		goto fail;
 
 	/* Set up the command ring to have one segments for now. */
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_ADD_DYNAMIC_RING_BUFFER	
+	xhci->cmd_ring = xhci_ring_alloc(xhci, 1, 1, TYPE_COMMAND, flags);
+#else
 	xhci->cmd_ring = xhci_ring_alloc(xhci, 1, true, false, flags);
+#endif	
 	if (!xhci->cmd_ring)
 		goto fail;
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX 
+	INIT_LIST_HEAD(&xhci->cancel_cmd_list);
+#endif
 	xhci_dbg(xhci, "Allocated command ring at %p\n", xhci->cmd_ring);
 	xhci_dbg(xhci, "First segment DMA is 0x%llx\n",
 			(unsigned long long)xhci->cmd_ring->first_seg->dma);
@@ -2042,8 +2333,13 @@ int xhci_mem_init(struct xhci_hcd *xhci, gfp_t flags)
 	 * the event ring segment table (ERST).  Section 4.9.3.
 	 */
 	xhci_dbg(xhci, "// Allocating event ring\n");
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_ADD_DYNAMIC_RING_BUFFER	
+	xhci->event_ring = xhci_ring_alloc(xhci, ERST_NUM_SEGS, 1, TYPE_EVENT,
+						flags);
+#else
 	xhci->event_ring = xhci_ring_alloc(xhci, ERST_NUM_SEGS, false, false,
 						flags);
+#endif						
 	if (!xhci->event_ring)
 		goto fail;
 	if (xhci_check_trb_in_td_math(xhci, flags) < 0)

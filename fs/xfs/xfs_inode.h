@@ -504,6 +504,15 @@ int		xfs_ifree(struct xfs_trans *, xfs_inode_t *,
 int		xfs_itruncate_start(xfs_inode_t *, uint, xfs_fsize_t);
 int		xfs_itruncate_finish(struct xfs_trans **, xfs_inode_t *,
 				     xfs_fsize_t, int, int);
+#ifdef CONFIG_XFS_FS_TRUNCATE_RANGE
+int             xfs_itruncate_range(struct xfs_trans**, xfs_inode_t*, xfs_fsize_t,
+                                        xfs_fsize_t, int, int);
+#endif
+#ifdef CONFIG_XFS_FS_SPLIT
+int             xfs_isplit(struct xfs_trans**, xfs_inode_t*, xfs_fsize_t, xfs_fsize_t,
+                                                             int, int, xfs_split_data_t*);
+int             xfs_free_after_split(struct xfs_trans**, xfs_inode_t*, xfs_split_data_t *);
+#endif
 int		xfs_iunlink(struct xfs_trans *, xfs_inode_t *);
 
 void		xfs_iext_realloc(xfs_inode_t *, int, int);
@@ -564,6 +573,8 @@ void		xfs_iext_remove_inline(xfs_ifork_t *, xfs_extnum_t, int);
 void		xfs_iext_remove_direct(xfs_ifork_t *, xfs_extnum_t, int);
 void		xfs_iext_remove_indirect(xfs_ifork_t *, xfs_extnum_t, int);
 void		xfs_iext_realloc_direct(xfs_ifork_t *, int);
+void            xfs_iext_indirect_to_direct(xfs_ifork_t *);
+void            xfs_iext_direct_to_inline(xfs_ifork_t *, xfs_extnum_t);
 void		xfs_iext_direct_to_inline(xfs_ifork_t *, xfs_extnum_t);
 void		xfs_iext_inline_to_direct(xfs_ifork_t *, int);
 void		xfs_iext_destroy(xfs_ifork_t *);

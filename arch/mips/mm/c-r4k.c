@@ -33,7 +33,17 @@
 #include <asm/mmu_context.h>
 #include <asm/war.h>
 #include <asm/cacheflush.h> /* for run_uncached() */
+#ifdef CONFIG_NVT_CHIP
+#include <asm/wbflush.h>
+#endif
 
+//L2 cache 
+#if (defined(CONFIG_MSTAR_AMBER1) || defined(CONFIG_MSTAR_EMERALD))
+	extern void Chip_L2_cache_inv( unsigned long addr, unsigned long size);
+	extern void Chip_L2_cache_wback( unsigned long addr, unsigned long size);
+	extern void Chip_L2_cache_wback_inv( unsigned long addr, unsigned long size);
+	extern int smp_call_function(void(*func)(void *info), void *info, int wait);
+#endif
 
 /*
  * Special Variant of smp_call_function for use by cache functions:
@@ -620,12 +630,25 @@ static void r4k_dma_cache_wback_inv(unsigned long addr, unsigned long size)
 	}
 
 	bc_wback_inv(addr, size);
+#if (defined(CONFIG_MSTAR_AMBER1) || defined(CONFIG_MSTAR_EMERALD))
+	Chip_L2_cache_wback_inv( addr&0x0FFFFFFF , size);
+#endif
+
+#ifdef CONFIG_NVT_CHIP
+	wbflush_axi();
+#endif
 }
 
 static void r4k_dma_cache_inv(unsigned long addr, unsigned long size)
 {
 	/* Catch bad driver code */
 	BUG_ON(size == 0);
+
+#if (defined(CONFIG_MSTAR_AMBER1) || defined(CONFIG_MSTAR_EMERALD))
+	if((0x80000000 <= addr) && (addr < 0xA0000000)) {
+        	Chip_L2_cache_inv(addr&0x0FFFFFFF, size);
+	}
+#endif
 
 	if (cpu_has_inclusive_pcaches) {
 		if (size >= scache_size)
@@ -663,6 +686,10 @@ static void r4k_dma_cache_inv(unsigned long addr, unsigned long size)
 	}
 
 	bc_inv(addr, size);
+
+#ifdef CONFIG_NVT_CHIP
+	wbflush_axi();
+#endif
 }
 #endif /* CONFIG_DMA_NONCOHERENT */
 
@@ -1352,6 +1379,9 @@ void __cpuinit r4k_cache_init(void)
 	extern void build_copy_page(void);
 	extern char __weak except_vec2_generic;
 	extern char __weak except_vec2_sb1;
+#ifdef CONFIG_NVT_CHIP
+	extern int coherentio;
+#endif
 	struct cpuinfo_mips *c = &current_cpu_data;
 
 	switch (c->cputype) {

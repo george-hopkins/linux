@@ -111,14 +111,25 @@ struct ehci_regs {
 	/* ASYNCLISTADDR: offset 0x18 */
 	u32		async_next;	/* address of next async queue head */
 
-	u32		reserved[9];
-
+#if defined(CONFIG_MSTAR_CHIP) || defined(CONFIG_NVT_NT72568)
+	/* Reserved: offset 0x1C */
+	u32		reserved [1];
+#else
+	u32		reserved [9];
+#endif
+	
+#if !defined(CONFIG_MSTAR_CHIP) && !defined(CONFIG_NVT_NT72568)
 	/* CONFIGFLAG: offset 0x40 */
 	u32		configured_flag;
+#endif
 #define FLAG_CF		(1<<0)		/* true: we'll support "high speed" */
 
 	/* PORTSC: offset 0x44 */
+#ifdef CONFIG_MSTAR_CHIP
+	u32		port_status[1];	/* up to N_PORTS */
+#else
 	u32		port_status[0];	/* up to N_PORTS */
+#endif
 /* EHCI 1.1 addendum */
 #define PORTSC_SUSPEND_STS_ACK 0
 #define PORTSC_SUSPEND_STS_NYET 1
@@ -155,7 +166,25 @@ struct ehci_regs {
 #define PORT_CSC	(1<<1)		/* connect status change */
 #define PORT_CONNECT	(1<<0)		/* device connected */
 #define PORT_RWC_BITS   (PORT_CSC | PORT_PEC | PORT_OCC)
-};
+#ifdef CONFIG_MSTAR_CHIP
+#define FLAG_CF        (1<<0)      /* true: we'll support "high speed" */
+	u32		hcmisc ;
+	u32		reserved1 [2];
+	/* offset 0x30 */
+	u32		bmcs;
+	u32		busmonintsts;
+	u32		busmoninten;
+#ifndef CONFIG_MSTAR_CHIP
+	u32		reserved2 [1];
+#endif
+	/* CONFIGFLAG: offset 0x40 */
+	u32     configured_flag;
+#define FLAG_CF        (1<<0)      /* true: we'll support "high speed" */
+
+	/* reserved: offset 0x44 */
+	u32		reserved3 [1];
+#endif
+} __attribute__ ((packed));
 
 #define USBMODE		0x68		/* USB Device mode */
 #define USBMODE_SDIS	(1<<3)		/* Stream disable */
@@ -199,7 +228,7 @@ struct ehci_dbg_port {
 	u32	data47;
 	u32	address;
 #define DBGP_EPADDR(dev, ep)	(((dev)<<8)|(ep))
-};
+} __attribute__ ((packed));
 
 #ifdef CONFIG_EARLY_PRINTK_DBGP
 #include <linux/init.h>

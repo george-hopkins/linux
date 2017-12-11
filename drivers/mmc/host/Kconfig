@@ -4,6 +4,12 @@
 
 comment "MMC/SD/SDIO Host Controller Drivers"
 
+config MMC_MSTAR_MMC
+        tristate "Mstar Multimedia Card Interface support"
+#        depends on MSTAR_AMBER5 || MSTAR_AMBER3
+        help
+          Mstar FCIE SD/SDIO Host Controller Driver.
+
 config MMC_ARMMMCI
 	tristate "ARM AMBA Multimedia Card Interface support"
 	depends on ARM_AMBA

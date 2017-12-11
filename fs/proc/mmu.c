@@ -38,8 +38,11 @@ void get_vmalloc_info(struct vmalloc_info *vmi)
 			/*
 			 * Some archs keep another range for modules in vmlist
 			 */
+#ifdef CONFIG_VMALLOCUSED_PLUS
+#else
 			if (addr < VMALLOC_START)
 				continue;
+#endif
 			if (addr >= VMALLOC_END)
 				break;
 

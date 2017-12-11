@@ -18,6 +18,16 @@
 #ifndef __XFS_UTILS_H__
 #define __XFS_UTILS_H__
 
+#ifdef CONFIG_XFS_FS_TRUNCATE_RANGE
+extern int xfs_truncate_range_file(xfs_mount_t*, xfs_inode_t*,
+					 xfs_off_t, xfs_off_t);
+#endif
+#ifdef CONFIG_XFS_FS_SPLIT
+int xfs_split_file(xfs_mount_t*, xfs_inode_t*, xfs_split_data_t*);
+int xfs_free_leafblocks_after_split(xfs_mount_t*,
+				xfs_inode_t*, xfs_split_data_t*);
+#endif
+
 extern int xfs_dir_ialloc(xfs_trans_t **, xfs_inode_t *, mode_t, xfs_nlink_t,
 				xfs_dev_t, prid_t, int, xfs_inode_t **, int *);
 extern int xfs_droplink(xfs_trans_t *, xfs_inode_t *);

@@ -75,6 +75,8 @@ struct arm_pmu {
 	void		(*disable)(struct hw_perf_event *evt, int idx);
 	int		(*get_event_idx)(struct cpu_hw_events *cpuc,
 					 struct hw_perf_event *hwc);
+	int             (*set_event_filter)(struct hw_perf_event *evt,
+                                           struct perf_event_attr *attr);
 	u32		(*read_counter)(int idx);
 	void		(*write_counter)(int idx, u32 val);
 	void		(*start)(void);
@@ -90,7 +92,7 @@ struct arm_pmu {
 };
 
 /* Set at runtime when we know what CPU type we are. */
-static const struct arm_pmu *armpmu;
+static  struct arm_pmu *armpmu;
 
 enum arm_perf_pmu_ids
 armpmu_get_pmu_id(void)
@@ -469,6 +471,13 @@ hw_perf_event_destroy(struct perf_event *event)
 		mutex_unlock(&pmu_reserve_mutex);
 	}
 }
+ static int
+event_requires_mode_exclusion(struct perf_event_attr *attr)
+{
+       return attr->exclude_idle || attr->exclude_user ||
+              attr->exclude_kernel || attr->exclude_hv;
+}
+
 
 static int
 __hw_perf_event_init(struct perf_event *event)
@@ -493,37 +502,36 @@ __hw_perf_event_init(struct perf_event *event)
 			 event->attr.config);
 		return mapping;
 	}
+	/*
+        * We don't assign an index until we actually place the event onto
+        * hardware. Use -1 to signify that we haven't decided where to put it
+        * yet. For SMP systems, each core has it's own PMU so we can't do any
+        * clever allocation or constraints checking at this point.
+        */
+       hwc->idx                = -1;
+       hwc->config_base        = 0;
+       hwc->config             = 0;
+       hwc->event_base         = 0;
+
 
 	/*
 	 * Check whether we need to exclude the counter from certain modes.
-	 * The ARM performance counters are on all of the time so if someone
-	 * has asked us for some excludes then we have to fail.
+	 *
 	 */
-	if (event->attr.exclude_kernel || event->attr.exclude_user ||
-	    event->attr.exclude_hv || event->attr.exclude_idle) {
+       if ((!armpmu->set_event_filter ||
+            armpmu->set_event_filter(hwc, &event->attr)) &&
+            event_requires_mode_exclusion(&event->attr)) {
+
 		pr_debug("ARM performance counters do not support "
 			 "mode exclusion\n");
 		return -EPERM;
 	}
 
 	/*
-	 * We don't assign an index until we actually place the event onto
-	 * hardware. Use -1 to signify that we haven't decided where to put it
-	 * yet. For SMP systems, each core has it's own PMU so we can't do any
-	 * clever allocation or constraints checking at this point.
-	 */
-	hwc->idx = -1;
-
-	/*
-	 * Store the event encoding into the config_base field. config and
-	 * event_base are unused as the only 2 things we need to know are
-	 * the event mapping and the counter to use. The counter to use is
+	 * Store the event encoding into the config_base field.
 	 * also the indx and the config_base is the event type.
 	 */
-	hwc->config_base	    = (unsigned long)mapping;
-	hwc->config		    = 0;
-	hwc->event_base		    = 0;
-
+	hwc->config_base            |= (unsigned long)mapping;
 	if (!hwc->sample_period) {
 		hwc->sample_period  = armpmu->max_period;
 		hwc->last_period    = hwc->sample_period;
@@ -661,6 +669,9 @@ init_hw_perf_events(void)
 			break;
 		case 0xC090:	/* Cortex-A9 */
 			armpmu = armv7_a9_pmu_init();
+			break;
+		case 0xC0F0:    /* Cortex-A15 */
+			armpmu = armv7_a15_pmu_init();
 			break;
 		}
 	/* Intel CPUs [xscale]. */

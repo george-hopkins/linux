@@ -571,7 +571,19 @@ static void __init clean_rootfs(void)
 
 static int __init populate_rootfs(void)
 {
+#ifndef CONFIG_NVT_CHIP
 	char *err = unpack_to_rootfs(__initramfs_start, __initramfs_size);
+#else
+	char *err;
+#ifdef CONFIG_INITRAMFS_IMG_HDR_ADDR
+	unsigned int *header = (unsigned int *)CONFIG_INITRAMFS_IMG_HDR_ADDR;
+	err = unpack_to_rootfs( (char *)header[0], header[1] - header[0]);
+	printk(KERN_INFO "initramfs_start:0x%08X, initramfs_end:0x%08X\n",header[0],header[1]);
+#else
+	//err = unpack_to_rootfs(__initramfs_start,__initramfs_end - __initramfs_start);
+	err = unpack_to_rootfs(__initramfs_start, __initramfs_size);
+#endif
+#endif
 	if (err)
 		panic(err);	/* Failed to decompress INTERNAL initramfs */
 	if (initrd_start) {

@@ -98,7 +98,6 @@ struct bulk_cs_wrap {
 #define USB_STOR_TRANSPORT_FAILED  1   /* Transport good, command failed   */
 #define USB_STOR_TRANSPORT_NO_SENSE 2  /* Command failed, no auto-sense    */
 #define USB_STOR_TRANSPORT_ERROR   3   /* Transport bad (i.e. device dead) */
-
 /*
  * We used to have USB_STOR_XFER_ABORTED and USB_STOR_TRANSPORT_ABORTED
  * return codes.  But now the transport and low-level transfer routines

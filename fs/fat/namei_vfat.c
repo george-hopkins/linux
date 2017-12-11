@@ -23,6 +23,10 @@
 #include <linux/namei.h>
 #include "fat.h"
 
+#ifndef CONFIG_VFAT_FS_DUALNAMES
+#include <linux/net.h>
+#endif
+
 /*
  * If new entry was created in the parent, it could create the 8.3
  * alias (the shortname of logname).  So, the parent may have the
@@ -522,9 +526,8 @@ xlate_to_uni(const unsigned char *name, int len, unsigned char *outname,
 
 		op = &outname[*outlen * sizeof(wchar_t)];
 	} else {
-		if (nls) {
 			for (i = 0, ip = name, op = outname, *outlen = 0;
-			     i < len && *outlen <= FAT_LFN_LEN;
+			     i < len && *outlen < FAT_LFN_LEN;
 			     *outlen += 1)
 			{
 				if (escape && (*ip == ':')) {
@@ -562,17 +565,6 @@ xlate_to_uni(const unsigned char *name, int len, unsigned char *outname,
 			}
 			if (i < len)
 				return -ENAMETOOLONG;
-		} else {
-			for (i = 0, ip = name, op = outname, *outlen = 0;
-			     i < len && *outlen <= FAT_LFN_LEN;
-			     i++, *outlen += 1)
-			{
-				*op++ = *ip++;
-				*op++ = 0;
-			}
-			if (i < len)
-				return -ENAMETOOLONG;
-		}
 	}
 
 	*longlen = *outlen;
@@ -592,6 +584,58 @@ xlate_to_uni(const unsigned char *name, int len, unsigned char *outname,
 
 	return 0;
 }
+
+#ifndef CONFIG_VFAT_FS_DUALNAMES
+/*
+ * build a 11 byte 8.3 buffer which is not a short filename. We want 11
+ * bytes which:
+ *    - will be seen as a constant string to all APIs on Linux and Windows
+ *    - cannot be matched with wildcard patterns
+ *    - cannot be used to access the file
+ *    - has a low probability of collision within a directory
+ *    - has an invalid 3 byte extension
+ *    - contains at least one non-space and non-nul byte
+ */
+static void vfat_build_dummy_83_buffer(struct inode *dir, char *msdos_name)
+{
+	u32 rand_num = net_random() & 0x3FFFFFFF;
+	int i;
+
+	/* a value of zero would leave us with only nul and spaces,
+	 * which would not work with older linux systems
+	 */
+	if (rand_num == 0)
+		rand_num = 1;
+
+	/* we start with a space followed by nul as spaces at the
+	 * start of an entry are trimmed in FAT, which means that
+	 * starting the 11 bytes with 0x20 0x00 gives us a value which
+	 * cannot be used to access the file. It also means that the
+	 * value as seen from all Windows and Linux APIs is a constant
+	 */
+	msdos_name[0] = ' ';
+	msdos_name[1] = 0;
+
+	/* we use / and 2 nul bytes for the extension. These are
+	 * invalid in FAT and mean that utilities that show the
+	 * directory show no extension, but still work via the long
+	 * name for old Linux kernels
+	 */
+	msdos_name[8] = '/';
+	msdos_name[9] = 0;
+	msdos_name[10] = 0;
+
+	/*
+	 * fill the remaining 6 bytes with random invalid values
+	 * This gives us a low collision rate, which means a low
+	 * chance of problems with chkdsk.exe and WindowsXP
+	 */
+	for (i = 2; i < 8; i++) {
+		msdos_name[i] = rand_num & 0x1F;
+		rand_num >>= 5;
+	}
+}
+#endif
 
 static int vfat_build_slots(struct inode *dir, const unsigned char *name,
 			    int len, int is_dir, int cluster,
@@ -635,6 +679,11 @@ static int vfat_build_slots(struct inode *dir, const unsigned char *name,
 		goto shortname;
 	}
 
+#ifndef CONFIG_VFAT_FS_DUALNAMES
+	vfat_build_dummy_83_buffer(dir, msdos_name);
+	lcase = 0; 
+#endif
+	
 	/* build the entry of long file name */
 	cksum = fat_checksum(msdos_name);
 
@@ -663,8 +712,7 @@ shortname:
 	de->time = de->ctime = time;
 	de->date = de->cdate = de->adate = date;
 	de->ctime_cs = time_cs;
-	de->start = cpu_to_le16(cluster);
-	de->starthi = cpu_to_le16(cluster >> 16);
+	fat_set_start(de, cluster);
 	de->size = 0;
 out_free:
 	__putname(uname);
@@ -847,6 +895,26 @@ out:
 	return err;
 }
 
+static void fat_add_busy_entry(struct super_block *sb, struct inode *inode,
+				struct fat_slot_info sinfo)
+{
+	struct msdos_sb_info *sbi = MSDOS_SB(sb);
+	struct ipos_busy_list *unlinked_ipos = NULL;
+
+	if (inode && (atomic_read(&inode->i_count))) {
+		unlinked_ipos = kzalloc(sizeof(struct ipos_busy_list),
+					 GFP_KERNEL);
+		if (unlinked_ipos) {
+			unlinked_ipos->i_pos = inode->i_ino;
+			unlinked_ipos->nr_slots = sinfo.nr_slots;
+			spin_lock(&sbi->ipos_busy_lock);
+			list_add_tail(&unlinked_ipos->ipos_list,
+					sbi->ipos_list_head);
+			spin_unlock(&sbi->ipos_busy_lock);
+		}
+	}
+}
+
 static int vfat_unlink(struct inode *dir, struct dentry *dentry)
 {
 	struct inode *inode = dentry->d_inode;
@@ -865,7 +933,10 @@ static int vfat_unlink(struct inode *dir, struct dentry *dentry)
 		goto out;
 	clear_nlink(inode);
 	inode->i_mtime = inode->i_atime = CURRENT_TIME_SEC;
-	fat_detach(inode);
+	if (MSDOS_SB(sb)->options.nfs)
+		fat_add_busy_entry(sb, inode, sinfo);
+	else
+		fat_detach(inode);
 out:
 	unlock_super(sb);
 
@@ -927,7 +998,7 @@ static int vfat_rename(struct inode *old_dir, struct dentry *old_dentry,
 	struct inode *old_inode, *new_inode;
 	struct fat_slot_info old_sinfo, sinfo;
 	struct timespec ts;
-	loff_t dotdot_i_pos, new_i_pos;
+	loff_t new_i_pos;
 	int err, is_dir, update_dotdot, corrupt = 0;
 	struct super_block *sb = old_dir->i_sb;
 
@@ -942,8 +1013,7 @@ static int vfat_rename(struct inode *old_dir, struct dentry *old_dentry,
 	is_dir = S_ISDIR(old_inode->i_mode);
 	update_dotdot = (is_dir && old_dir != new_dir);
 	if (update_dotdot) {
-		if (fat_get_dotdot_entry(old_inode, &dotdot_bh, &dotdot_de,
-					 &dotdot_i_pos) < 0) {
+		if (fat_get_dotdot_entry(old_inode, &dotdot_bh, &dotdot_de)) {
 			err = -EIO;
 			goto out;
 		}
@@ -968,6 +1038,13 @@ static int vfat_rename(struct inode *old_dir, struct dentry *old_dentry,
 	new_dir->i_version++;
 
 	fat_detach(old_inode);
+	if (MSDOS_SB(sb)->options.nfs) {
+		if ((old_dentry->d_count == 1) &&
+			((fat_get_nfs_clnt_open_count(old_inode) <= 0)))
+				old_inode->i_ino = new_i_pos;
+		else
+			fat_add_busy_entry(sb, old_inode, old_sinfo);
+	}
 	fat_attach(old_inode, new_i_pos);
 	if (IS_DIRSYNC(new_dir)) {
 		err = fat_sync_inode(old_inode);
@@ -977,9 +1054,7 @@ static int vfat_rename(struct inode *old_dir, struct dentry *old_dentry,
 		mark_inode_dirty(old_inode);
 
 	if (update_dotdot) {
-		int start = MSDOS_I(new_dir)->i_logstart;
-		dotdot_de->start = cpu_to_le16(start);
-		dotdot_de->starthi = cpu_to_le16(start >> 16);
+		fat_set_start(dotdot_de, MSDOS_I(new_dir)->i_logstart);
 		mark_buffer_dirty_inode(dotdot_bh, old_inode);
 		if (IS_DIRSYNC(new_dir)) {
 			err = sync_dirty_buffer(dotdot_bh);
@@ -1021,9 +1096,7 @@ error_dotdot:
 	corrupt = 1;
 
 	if (update_dotdot) {
-		int start = MSDOS_I(old_dir)->i_logstart;
-		dotdot_de->start = cpu_to_le16(start);
-		dotdot_de->starthi = cpu_to_le16(start >> 16);
+		fat_set_start(dotdot_de, MSDOS_I(old_dir)->i_logstart);
 		mark_buffer_dirty_inode(dotdot_bh, old_inode);
 		corrupt |= sync_dirty_buffer(dotdot_bh);
 	}

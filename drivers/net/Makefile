@@ -1,7 +1,7 @@
 #
 # Makefile for the Linux network (ethercard) device drivers.
 #
-
+obj-$(CONFIG_NVT_FASTETH_MAC) += nvt_fasteth_mac/
 obj-$(CONFIG_MII) += mii.o
 obj-$(CONFIG_MDIO) += mdio.o
 obj-$(CONFIG_PHYLIB) += phy/

@@ -35,6 +35,13 @@
 #define SG_MEMPOOL_NR		ARRAY_SIZE(scsi_sg_pools)
 #define SG_MEMPOOL_SIZE		2
 
+#ifdef SAMSUNG_PATCH_WITH_USB_ENHANCEMENT
+/* SELP.arm.3.x support A1 2007-10-22 */
+//hongyabi patch for US_FLIDX_SCSI_MAX_32_BLOCK device
+//20070716
+#define US_FLIDX_SCSI_MAX_32_BLOCK      26
+#endif
+
 struct scsi_host_sg_pool {
 	size_t		size;
 	char		*name;
@@ -153,14 +160,15 @@ static int __scsi_queue_insert(struct scsi_cmnd *cmd, int reason, int unbusy)
 
 	/*
 	 * Requeue this command.  It will go before all other commands
-	 * that are already in the queue.
+	 * that are already in the queue. Schedule requeue work under
+	 * lock such that the kblockd_schedule_work() call happens
+	 * before blk_cleanup_queue() finishes.
 	 */
 	spin_lock_irqsave(q->queue_lock, flags);
 	blk_requeue_request(q, cmd->request);
-	spin_unlock_irqrestore(q->queue_lock, flags);
 
 	kblockd_schedule_work(q, &device->requeue_work);
-
+	spin_unlock_irqrestore(q->queue_lock, flags);
 	return 0;
 }
 
@@ -404,10 +412,6 @@ static void scsi_run_queue(struct request_queue *q)
 	LIST_HEAD(starved_list);
 	unsigned long flags;
 
-	/* if the device is dead, sdev will be NULL, so no queue to run */
-	if (!sdev)
-		return;
-
 	shost = sdev->host;
 	if (scsi_target(sdev)->single_lun)
 		scsi_single_lun_run(sdev);
@@ -481,8 +485,17 @@ void scsi_requeue_run_queue(struct work_struct *work)
  */
 static void scsi_requeue_command(struct request_queue *q, struct scsi_cmnd *cmd)
 {
+	struct scsi_device *sdev = cmd->device;
 	struct request *req = cmd->request;
 	unsigned long flags;
+
+	/*
+	 * We need to hold a reference on the device to avoid the queue being
+	 * killed after the unlock and before scsi_run_queue is invoked which
+	 * may happen because scsi_unprep_request() puts the command which
+	 * releases its reference on the device.
+	 */
+	get_device(&sdev->sdev_gendev);
 
 	spin_lock_irqsave(q->queue_lock, flags);
 	scsi_unprep_request(req);
@@ -490,6 +503,8 @@ static void scsi_requeue_command(struct request_queue *q, struct scsi_cmnd *cmd)
 	spin_unlock_irqrestore(q->queue_lock, flags);
 
 	scsi_run_queue(q);
+
+	put_device(&sdev->sdev_gendev);
 }
 
 void scsi_next_command(struct scsi_cmnd *cmd)
@@ -743,6 +758,7 @@ void scsi_io_completion(struct scsi_cmnd *cmd, unsigned int good_bytes)
 	enum {ACTION_FAIL, ACTION_REPREP, ACTION_RETRY,
 	      ACTION_DELAYED_RETRY} action;
 	char *description = NULL;
+	unsigned long flags;
 
 	if (result) {
 		sense_valid = scsi_command_normalize_sense(cmd, &sshdr);
@@ -941,10 +957,31 @@ void scsi_io_completion(struct scsi_cmnd *cmd, unsigned int good_bytes)
 				scsi_print_sense("", cmd);
 			scsi_print_command(cmd);
 		}
+
+		/* we can know there is bad sector in HDD by scsi timeout */
+		if (cmd->retries > cmd->allowed)
+			error = -EBADSEC;
 		if (blk_end_request_err(req, error))
 			scsi_requeue_command(q, cmd);
-		else
+		else{
+			/*
+			 * Fix write blocking problem from corrupted HDD.
+			 * We try to cancel requests in request queue to avoid blocking by several scsi timeout.
+			*/
+			if (cmd->retries > cmd->allowed) {
+				spin_lock_irqsave(q->queue_lock, flags);
+				while (((req = blk_peek_request(q)) != NULL)
+						&& (rq_data_dir(req) == WRITE)) {
+					if (req) {
+						blk_start_request(req);
+						__blk_end_request_all(req,
+								 -EBADSEC);
+					}
+				}
+				spin_unlock_irqrestore(q->queue_lock, flags);
+			}
 			scsi_next_command(cmd);
+		}
 		break;
 	case ACTION_REPREP:
 		/* Unprep the request and put it back at the head of the queue.
@@ -1372,9 +1409,9 @@ static inline int scsi_host_queue_ready(struct request_queue *q,
  * may be changed after request stacking drivers call the function,
  * regardless of taking lock or not.
  *
- * When scsi can't dispatch I/Os anymore and needs to kill I/Os
- * (e.g. !sdev), scsi needs to return 'not busy'.
- * Otherwise, request stacking drivers may hold requests forever.
+ * When scsi can't dispatch I/Os anymore and needs to kill I/Os scsi
+ * needs to return 'not busy'. Otherwise, request stacking drivers
+ * may hold requests forever.
  */
 static int scsi_lld_busy(struct request_queue *q)
 {
@@ -1382,7 +1419,7 @@ static int scsi_lld_busy(struct request_queue *q)
 	struct Scsi_Host *shost;
 	struct scsi_target *starget;
 
-	if (!sdev)
+	if (blk_queue_dead(q))
 		return 0;
 
 	shost = sdev->host;
@@ -1488,12 +1525,6 @@ static void scsi_request_fn(struct request_queue *q)
 	struct Scsi_Host *shost;
 	struct scsi_cmnd *cmd;
 	struct request *req;
-
-	if (!sdev) {
-		while ((req = blk_peek_request(q)) != NULL)
-			scsi_kill_request(req, q);
-		return;
-	}
 
 	if(!get_device(&sdev->sdev_gendev))
 		/* We must be tearing the block queue down already */
@@ -1646,6 +1677,14 @@ struct request_queue *__scsi_alloc_queue(struct Scsi_Host *shost,
 	if (!q)
 		return NULL;
 
+#ifdef SAMSUNG_PATCH_WITH_USB_ENHANCEMENT
+ /* VDLP.arm.3.x support A1 2007-10-22 */
+        //hongyabi patch for US_FLIDX_SCSI_MAX_32_BLOCK device
+        //20070716
+       if (test_bit(US_FLIDX_SCSI_MAX_32_BLOCK, &shost->flags))
+                blk_queue_max_segments(q, SCSI_MAX_PHYS_SEGMENTS_32);
+       else
+#endif
 	/*
 	 * this limit is imposed by hardware restrictions
 	 */
@@ -1694,20 +1733,6 @@ struct request_queue *scsi_alloc_queue(struct scsi_device *sdev)
 	blk_queue_rq_timed_out(q, scsi_times_out);
 	blk_queue_lld_busy(q, scsi_lld_busy);
 	return q;
-}
-
-void scsi_free_queue(struct request_queue *q)
-{
-	unsigned long flags;
-
-	WARN_ON(q->queuedata);
-
-	/* cause scsi_request_fn() to kill all non-finished requests */
-	spin_lock_irqsave(q->queue_lock, flags);
-	q->request_fn(q);
-	spin_unlock_irqrestore(q->queue_lock, flags);
-
-	blk_cleanup_queue(q);
 }
 
 /*

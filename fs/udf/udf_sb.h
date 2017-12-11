@@ -61,6 +61,7 @@ struct udf_meta_data {
 	__u32	s_alloc_unit_size;
 	__u16	s_align_unit_size;
 	__u8 	s_dup_md_flag;
+	__u8    s_mirror_loaded_flag;
 	struct inode *s_metadata_fe;
 	struct inode *s_mirror_fe;
 	struct inode *s_bitmap_fe;
@@ -178,5 +179,6 @@ static inline void UDF_CLEAR_FLAG(struct super_block *sb, int flag)
 {
 	clear_bit(flag, &UDF_SB(sb)->s_flags);
 }
-
+#define CACHED_METADATA_BDROM 1
+void udf_release_data(struct buffer_head *);
 #endif /* __LINUX_UDF_SB_H */

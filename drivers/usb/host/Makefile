@@ -11,8 +11,14 @@ fhci-y += fhci-mem.o fhci-tds.o fhci-sched.o
 
 fhci-$(CONFIG_FHCI_DEBUG) += fhci-dbg.o
 
-xhci-hcd-y := xhci.o xhci-mem.o xhci-pci.o
+xhci-hcd-y := xhci.o xhci-mem.o
 xhci-hcd-y += xhci-ring.o xhci-hub.o xhci-dbg.o
+
+ifeq ($(CONFIG_ARCH_CCEP),y)
+xhci-hcd-y += xhci-sdp.o
+else
+xhci-hcd-y += xhci-pci.o
+endif
 
 obj-$(CONFIG_USB_WHCI_HCD)	+= whci/
 

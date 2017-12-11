@@ -26,7 +26,9 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/slab.h>
-
+#ifdef CONFIG_ARCH_CCEP
+#include <linux/platform_device.h>
+#endif
 #include "xhci.h"
 
 #define DRIVER_AUTHOR "Sarah Sharp"
@@ -51,8 +53,13 @@ MODULE_PARM_DESC(link_quirk, "Don't clear the chain bit on a link TRB");
  * handshake done).  There are two failure modes:  "usec" have passed (major
  * hardware flakeout), or the register reads as all-ones (hardware removed).
  */
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX
+int handshake(struct xhci_hcd *xhci, void __iomem *ptr,
+			u32 mask, u32 done, int usec)
+#else
 static int handshake(struct xhci_hcd *xhci, void __iomem *ptr,
 		      u32 mask, u32 done, int usec)
+#endif
 {
 	u32	result;
 
@@ -104,9 +111,22 @@ int xhci_halt(struct xhci_hcd *xhci)
 
 	ret = handshake(xhci, &xhci->op_regs->status,
 			STS_HALT, STS_HALT, XHCI_MAX_HALT_USEC);
+
+#ifdef	SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX
+	if (!ret) { 		
+		xhci->xhc_state |= XHCI_STATE_HALTED;
+		xhci->cmd_ring_state = CMD_RING_STATE_STOPPED;
+		}
+	else
+		xhci_warn(xhci, "Host not halted after %u microseconds.\n",
+		XHCI_MAX_HALT_USEC); 	
+	return ret;
+#else
 	if (!ret)
 		xhci->xhc_state |= XHCI_STATE_HALTED;
 	return ret;
+
+#endif
 }
 
 /*
@@ -175,6 +195,7 @@ int xhci_reset(struct xhci_hcd *xhci)
 	return handshake(xhci, &xhci->op_regs->status, STS_CNR, 0, 250 * 1000);
 }
 
+#if !defined(CONFIG_ARCH_CCEP)
 /*
  * Free IRQs
  * free all IRQs request
@@ -301,6 +322,7 @@ static void xhci_cleanup_msix(struct xhci_hcd *xhci)
 	hcd->msix_enabled = 0;
 	return;
 }
+#endif
 
 /*
  * Initialize memory for HCD and xHC (one-time init).
@@ -389,6 +411,9 @@ static int xhci_run_finished(struct xhci_hcd *xhci)
 		return -ENODEV;
 	}
 	xhci->shared_hcd->state = HC_STATE_RUNNING;
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX	
+	xhci->cmd_ring_state = CMD_RING_STATE_RUNNING;
+#endif 
 
 	if (xhci->quirks & XHCI_NEC_HOST)
 		xhci_ring_cmd_db(xhci);
@@ -413,19 +438,20 @@ int xhci_run(struct usb_hcd *hcd)
 {
 	u32 temp;
 	u64 temp_64;
-	u32 ret;
 	struct xhci_hcd *xhci = hcd_to_xhci(hcd);
+#if !defined(CONFIG_ARCH_CCEP)
+	u32 ret;
 	struct pci_dev  *pdev = to_pci_dev(xhci_to_hcd(xhci)->self.controller);
-
+#endif
 	/* Start the xHCI host controller running only after the USB 2.0 roothub
 	 * is setup.
 	 */
-
 	hcd->uses_new_polling = 1;
 	if (!usb_hcd_is_primary_hcd(hcd))
 		return xhci_run_finished(xhci);
 
 	xhci_dbg(xhci, "xhci_run\n");
+#if !defined(CONFIG_ARCH_CCEP)
 	/* unregister the legacy interrupt */
 	if (hcd->irq)
 		free_irq(hcd->irq, hcd);
@@ -459,6 +485,7 @@ legacy_irq:
 		}
 		hcd->irq = pdev->irq;
 	}
+#endif		
 
 #ifdef CONFIG_USB_XHCI_HCD_DEBUGGING
 	init_timer(&xhci->event_ring_timer);
@@ -555,7 +582,9 @@ void xhci_stop(struct usb_hcd *hcd)
 	xhci_reset(xhci);
 	spin_unlock_irq(&xhci->lock);
 
+#if !defined(CONFIG_ARCH_CCEP)
 	xhci_cleanup_msix(xhci);
+#endif
 
 #ifdef CONFIG_USB_XHCI_HCD_DEBUGGING
 	/* Tell the event ring poll function not to reschedule */
@@ -597,7 +626,9 @@ void xhci_shutdown(struct usb_hcd *hcd)
 	xhci_halt(xhci);
 	spin_unlock_irq(&xhci->lock);
 
+#if !defined(CONFIG_ARCH_CCEP)
 	xhci_cleanup_msix(xhci);
+#endif
 
 	xhci_dbg(xhci, "xhci_shutdown completed - status = %x\n",
 		    xhci_readl(xhci, &xhci->op_regs->status));
@@ -676,6 +707,9 @@ static void xhci_clear_command_ring(struct xhci_hcd *xhci)
 	ring->enq_seg = ring->deq_seg;
 	ring->enqueue = ring->dequeue;
 
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_ADD_DYNAMIC_RING_BUFFER
+	ring->num_trbs_free = ring->num_segs * (TRBS_PER_SEGMENT - 1) - 1;
+#endif
 	/*
 	 * Ring is now zeroed, so the HW should look for change of ownership
 	 * when the cycle bit is set to 1.
@@ -703,7 +737,9 @@ int xhci_suspend(struct xhci_hcd *xhci)
 	int			rc = 0;
 	struct usb_hcd		*hcd = xhci_to_hcd(xhci);
 	u32			command;
+#if !defined(CONFIG_ARCH_CCEP)
 	int			i;
+#endif
 
 	spin_lock_irq(&xhci->lock);
 	clear_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags);
@@ -715,8 +751,13 @@ int xhci_suspend(struct xhci_hcd *xhci)
 	command = xhci_readl(xhci, &xhci->op_regs->command);
 	command &= ~CMD_RUN;
 	xhci_writel(xhci, command, &xhci->op_regs->command);
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX 
 	if (handshake(xhci, &xhci->op_regs->status,
-		      STS_HALT, STS_HALT, 100*100)) {
+		STS_HALT, STS_HALT, XHCI_MAX_HALT_USEC)) {		  
+#else
+	if (handshake(xhci, &xhci->op_regs->status,
+		STS_HALT, STS_HALT, 100*100)) {	
+#endif				
 		xhci_warn(xhci, "WARN: xHC CMD_RUN timeout\n");
 		spin_unlock_irq(&xhci->lock);
 		return -ETIMEDOUT;
@@ -730,19 +771,26 @@ int xhci_suspend(struct xhci_hcd *xhci)
 	command = xhci_readl(xhci, &xhci->op_regs->command);
 	command |= CMD_CSS;
 	xhci_writel(xhci, command, &xhci->op_regs->command);
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX
+	if (handshake(xhci, &xhci->op_regs->status, STS_SAVE, 0, 10 * 1000)) {
+		xhci_warn(xhci, "WARN: xHC save state timeout\n");
+#else
 	if (handshake(xhci, &xhci->op_regs->status, STS_SAVE, 0, 10*100)) {
 		xhci_warn(xhci, "WARN: xHC CMD_CSS timeout\n");
+#endif
 		spin_unlock_irq(&xhci->lock);
 		return -ETIMEDOUT;
 	}
 	spin_unlock_irq(&xhci->lock);
 
 	/* step 5: remove core well power */
+#if !defined(CONFIG_ARCH_CCEP)
 	/* synchronize irq when using MSI-X */
 	if (xhci->msix_entries) {
 		for (i = 0; i < xhci->msix_count; i++)
 			synchronize_irq(xhci->msix_entries[i].vector);
 	}
+#endif
 
 	return rc;
 }
@@ -785,9 +833,15 @@ int xhci_resume(struct xhci_hcd *xhci, bool hibernated)
 		command = xhci_readl(xhci, &xhci->op_regs->command);
 		command |= CMD_CRS;
 		xhci_writel(xhci, command, &xhci->op_regs->command);
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX
+		if (handshake(xhci, &xhci->op_regs->status,
+				  STS_RESTORE, 0, 10 * 1000)) {
+			xhci_warn(xhci, "WARN: xHC restore state timeout\n");
+#else
 		if (handshake(xhci, &xhci->op_regs->status,
 			      STS_RESTORE, 0, 10*100)) {
 			xhci_dbg(xhci, "WARN: xHC CMD_CSS timeout\n");
+#endif
 			spin_unlock_irq(&xhci->lock);
 			return -ETIMEDOUT;
 		}
@@ -804,7 +858,9 @@ int xhci_resume(struct xhci_hcd *xhci, bool hibernated)
 		xhci_halt(xhci);
 		xhci_reset(xhci);
 		spin_unlock_irq(&xhci->lock);
+#if !defined(CONFIG_ARCH_CCEP)
 		xhci_cleanup_msix(xhci);
+#endif
 
 #ifdef CONFIG_USB_XHCI_HCD_DEBUGGING
 		/* Tell the event ring poll function not to reschedule */
@@ -953,8 +1009,12 @@ static int xhci_check_args(struct usb_hcd *hcd, struct usb_device *udev,
 		return -ENODEV;
 
 	if (check_virt_dev) {
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_CODE_CLEANUP
+		if (!udev->slot_id || !xhci->devs[udev->slot_id]) {
+#else
 		if (!udev->slot_id || !xhci->devs
 			|| !xhci->devs[udev->slot_id]) {
+#endif
 			printk(KERN_DEBUG "xHCI %s called with unaddressed "
 						"device\n", func);
 			return -EINVAL;
@@ -1043,6 +1103,9 @@ static int xhci_check_maxpacket(struct xhci_hcd *xhci, unsigned int slot_id,
 int xhci_urb_enqueue(struct usb_hcd *hcd, struct urb *urb, gfp_t mem_flags)
 {
 	struct xhci_hcd *xhci = hcd_to_xhci(hcd);
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX
+	struct xhci_td *buffer;
+#endif
 	unsigned long flags;
 	int ret = 0;
 	unsigned int slot_id, ep_index;
@@ -1072,14 +1135,29 @@ int xhci_urb_enqueue(struct usb_hcd *hcd, struct urb *urb, gfp_t mem_flags)
 				  size * sizeof(struct xhci_td *), mem_flags);
 	if (!urb_priv)
 		return -ENOMEM;
+		
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX
+	buffer = kzalloc(size * sizeof(struct xhci_td), mem_flags);
+	if (!buffer) {
+		kfree(urb_priv);
+		return -ENOMEM;
+			}
+#endif
+		
+	
 
 	for (i = 0; i < size; i++) {
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX
+		urb_priv->td[i] = buffer;
+		buffer++;
+#else
 		urb_priv->td[i] = kzalloc(sizeof(struct xhci_td), mem_flags);
 		if (!urb_priv->td[i]) {
 			urb_priv->length = i;
 			xhci_urb_free_priv(xhci, urb_priv);
-			return -ENOMEM;
+			return -ENOMEM;			
 		}
+#endif
 	}
 
 	urb_priv->length = size;
@@ -1771,6 +1849,9 @@ static int xhci_configure_endpoint(struct xhci_hcd *xhci,
 	struct completion *cmd_completion;
 	u32 *cmd_status;
 	struct xhci_virt_device *virt_dev;
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX
+	union xhci_trb *cmd_trb;
+#endif
 
 	spin_lock_irqsave(&xhci->lock, flags);
 	virt_dev = xhci->devs[udev->slot_id];
@@ -1813,6 +1894,9 @@ static int xhci_configure_endpoint(struct xhci_hcd *xhci,
 	}
 	init_completion(cmd_completion);
 
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX
+		cmd_trb = xhci->cmd_ring->dequeue;
+#endif
 	if (!ctx_change)
 		ret = xhci_queue_configure_endpoint(xhci, in_ctx->dma,
 				udev->slot_id, must_succeed);
@@ -1832,15 +1916,25 @@ static int xhci_configure_endpoint(struct xhci_hcd *xhci,
 	spin_unlock_irqrestore(&xhci->lock, flags);
 
 	/* Wait for the configure endpoint command to complete */
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX
 	timeleft = wait_for_completion_interruptible_timeout(
-			cmd_completion,
-			USB_CTRL_SET_TIMEOUT);
+			cmd_completion,	XHCI_CMD_DEFAULT_TIMEOUT);
+#else
+	timeleft = wait_for_completion_interruptible_timeout(
+			cmd_completion,	USB_CTRL_SET_TIMEOUT);
+#endif
 	if (timeleft <= 0) {
 		xhci_warn(xhci, "%s while waiting for %s command\n",
 				timeleft == 0 ? "Timeout" : "Signal",
 				ctx_change == 0 ?
 					"configure endpoint" :
 					"evaluate context");
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX
+		/* cancel the configure endpoint command */
+		ret = xhci_cancel_cmd(xhci, command, cmd_trb);
+		if (ret < 0)
+			return ret;
+#endif
 		/* FIXME cancel the configure endpoint command */
 		return -ETIME;
 	}
@@ -2774,8 +2868,14 @@ int xhci_alloc_dev(struct usb_hcd *hcd, struct usb_device *udev)
 	unsigned long flags;
 	int timeleft;
 	int ret;
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX
+	union xhci_trb *cmd_trb;
+#endif
 
 	spin_lock_irqsave(&xhci->lock, flags);
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX
+	cmd_trb = xhci->cmd_ring->dequeue;
+#endif
 	ret = xhci_queue_slot_control(xhci, TRB_ENABLE_SLOT, 0);
 	if (ret) {
 		spin_unlock_irqrestore(&xhci->lock, flags);
@@ -2786,13 +2886,23 @@ int xhci_alloc_dev(struct usb_hcd *hcd, struct usb_device *udev)
 	spin_unlock_irqrestore(&xhci->lock, flags);
 
 	/* XXX: how much time for xHC slot assignment? */
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX
+	timeleft = wait_for_completion_interruptible_timeout(&xhci->addr_dev,
+			XHCI_CMD_DEFAULT_TIMEOUT);
+#else
 	timeleft = wait_for_completion_interruptible_timeout(&xhci->addr_dev,
 			USB_CTRL_SET_TIMEOUT);
+#endif
 	if (timeleft <= 0) {
 		xhci_warn(xhci, "%s while waiting for a slot\n",
 				timeleft == 0 ? "Timeout" : "Signal");
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX
+		/* cancel the enable slot request */
+		return xhci_cancel_cmd(xhci, NULL, cmd_trb);
+#else
 		/* FIXME cancel the enable slot request */
 		return 0;
+#endif
 	}
 
 	if (!xhci->slot_id) {
@@ -2853,6 +2963,9 @@ int xhci_address_device(struct usb_hcd *hcd, struct usb_device *udev)
 	struct xhci_slot_ctx *slot_ctx;
 	struct xhci_input_control_ctx *ctrl_ctx;
 	u64 temp_64;
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX
+	union xhci_trb *cmd_trb;
+#endif
 
 	if (!udev->slot_id) {
 		xhci_dbg(xhci, "Bad Slot ID %d\n", udev->slot_id);
@@ -2891,6 +3004,9 @@ int xhci_address_device(struct usb_hcd *hcd, struct usb_device *udev)
 	xhci_dbg_ctx(xhci, virt_dev->in_ctx, 2);
 
 	spin_lock_irqsave(&xhci->lock, flags);
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX
+	cmd_trb = xhci->cmd_ring->dequeue;
+#endif	
 	ret = xhci_queue_address_device(xhci, virt_dev->in_ctx->dma,
 					udev->slot_id);
 	if (ret) {
@@ -2902,17 +3018,35 @@ int xhci_address_device(struct usb_hcd *hcd, struct usb_device *udev)
 	spin_unlock_irqrestore(&xhci->lock, flags);
 
 	/* ctrl tx can take up to 5 sec; XXX: need more time for xHC? */
-	timeleft = wait_for_completion_interruptible_timeout(&xhci->addr_dev,
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX
+			timeleft = wait_for_completion_interruptible_timeout(&xhci->addr_dev,
+			XHCI_CMD_DEFAULT_TIMEOUT);
+#else
+			timeleft = wait_for_completion_interruptible_timeout(&xhci->addr_dev,
 			USB_CTRL_SET_TIMEOUT);
+#endif
 	/* FIXME: From section 4.3.4: "Software shall be responsible for timing
 	 * the SetAddress() "recovery interval" required by USB and aborting the
 	 * command on a timeout.
 	 */
 	if (timeleft <= 0) {
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_CODE_CLEANUP
+		xhci_warn(xhci, "%s while waiting for address device command\n",
+				timeleft == 0 ? "Timeout" : "Signal");
+#else
 		xhci_warn(xhci, "%s while waiting for a slot\n",
 				timeleft == 0 ? "Timeout" : "Signal");
+#endif	
+			
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_BUGFIX
+		/* cancel the address device command */
+		ret = xhci_cancel_cmd(xhci, NULL, cmd_trb);
+		if (ret < 0)
+			return ret;
+#endif
 		/* FIXME cancel the address device command */
 		return -ETIME;
+
 	}
 
 	switch (virt_dev->cmd_status) {
@@ -3076,9 +3210,16 @@ MODULE_LICENSE("GPL");
 
 static int __init xhci_hcd_init(void)
 {
-#ifdef CONFIG_PCI
 	int retval = 0;
 
+#ifdef CONFIG_ARCH_CCEP
+	retval = xhci_register();
+	
+	if (retval < 0) {
+		printk(KERN_DEBUG "Problem registering Platform driver.");
+		return retval;
+	}
+#elif defined (CONFIG_PCI)
 	retval = xhci_register_pci();
 
 	if (retval < 0) {
@@ -3086,6 +3227,7 @@ static int __init xhci_hcd_init(void)
 		return retval;
 	}
 #endif
+
 	/*
 	 * Check the compiler generated sizes of structures that must be laid
 	 * out in specific ways for hardware access.
@@ -3103,14 +3245,18 @@ static int __init xhci_hcd_init(void)
 	BUILD_BUG_ON(sizeof(struct xhci_intr_reg) != 8*32/8);
 	/* xhci_run_regs has eight fields and embeds 128 xhci_intr_regs */
 	BUILD_BUG_ON(sizeof(struct xhci_run_regs) != (8+8*128)*32/8);
+#ifndef SAMSUNG_PATCH_WITH_USB_XHCI_CODE_CLEANUP
 	BUILD_BUG_ON(sizeof(struct xhci_doorbell_array) != 256*32/8);
+#endif
 	return 0;
 }
 module_init(xhci_hcd_init);
 
 static void __exit xhci_hcd_cleanup(void)
 {
-#ifdef CONFIG_PCI
+#ifdef CONFIG_ARCH_CCEP
+	xhci_unregister();
+#elif defined (CONFIG_PCI)
 	xhci_unregister_pci();
 #endif
 }

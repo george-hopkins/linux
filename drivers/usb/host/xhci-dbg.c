@@ -118,8 +118,13 @@ static void xhci_print_command_reg(struct xhci_hcd *xhci)
 			(temp & CMD_RESET) ? "not " : "");
 	xhci_dbg(xhci, "  Event Interrupts %s\n",
 			(temp & CMD_EIE) ? "enabled " : "disabled");
+#ifdef SAMSUNG_PATCH_WITH_USB_XHCI_CODE_CLEANUP
+	xhci_dbg(xhci, "  Host System Error Interrupts %s\n",
+			(temp & CMD_HSEIE) ? "enabled " : "disabled");
+#else
 	xhci_dbg(xhci, "  Host System Error Interrupts %s\n",
 			(temp & CMD_EIE) ? "enabled " : "disabled");
+#endif
 	xhci_dbg(xhci, "  HC has %sfinished light reset\n",
 			(temp & CMD_LRESET) ? "not " : "");
 }

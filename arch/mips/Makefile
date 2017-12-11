@@ -203,6 +203,23 @@ cflags-$(CONFIG_NLM_COMMON)		+= -I$(srctree)/arch/mips/include/asm/netlogic
 core-$(CONFIG_NLM_XLR)      		+= arch/mips/netlogic/xlr/
 load-$(CONFIG_NLM_XLR_BOARD)		+= 0xffffffff84000000
 
+
+core-$(CONFIG_MIPS_BOARDS_GEN)	+= arch/mips/mips-boards/generic/
+
+#
+# MStar emerald project
+#
+core-$(CONFIG_MSTAR_EMERALD)	+= arch/mips/mips-boards/emerald/
+cflags-$(CONFIG_MSTAR_EMERALD)+= -I$(srctree)/arch/mips/include/asm/mach-malta
+cflags-$(CONFIG_MSTAR_EMERALD)+= -I$(srctree)/arch/mips/mips-boards/emerald
+load-$(CONFIG_MSTAR_EMERALD)	+= 0xffffffff80000000
+all-$(CONFIG_MSTAR_EMERALD)	:= vmlinux.bin
+
+#
+# Add new MStar mips chips above this line
+#
+
+
 cflags-y			+= -I$(srctree)/arch/mips/include/asm/mach-generic
 drivers-$(CONFIG_PCI)		+= arch/mips/pci/
 
@@ -281,19 +298,55 @@ vmlinux.32: vmlinux
 vmlinux.64: vmlinux
 	$(OBJCOPY) -O $(64bit-bfd) $(OBJCOPYFLAGS) $< $@
 
-all:	$(all-y)
 
-# boot
-vmlinux.bin vmlinux.ecoff vmlinux.srec: $(vmlinux-32) FORCE
-	$(Q)$(MAKE) $(build)=arch/mips/boot VMLINUX=$(vmlinux-32) arch/mips/boot/$@
+makeboot =$(Q)$(MAKE) $(build)=arch/mips/boot VMLINUX=$(vmlinux-32) $(1)
+makezboot =$(Q)$(MAKE) $(build)=arch/mips/boot/compressed \
+           VMLINUX_LOAD_ADDRESS=$(load-y) 32bit-bfd=$(32bit-bfd) $(1)
 
-# boot/compressed
-vmlinuz vmlinuz.bin vmlinuz.ecoff vmlinuz.srec: $(vmlinux-32) FORCE
-	$(Q)$(MAKE) $(build)=arch/mips/boot/compressed \
-	   VMLINUX_LOAD_ADDRESS=$(load-y) 32bit-bfd=$(32bit-bfd) $@
+all:    $(all-y)
+
+vmlinuz: vmlinux FORCE
+	+@$(call makezboot,$@)
+
+vmlinuz.bin: vmlinux
+	+@$(call makezboot,$@)
+ifeq ($(CONFIG_PULLOUT_INITRAMFS), y)
+	@./scripts/packramfs initramfs.bin
+endif
+
+vmlinuz.ecoff: vmlinux
+	+@$(call makezboot,$@)
+
+vmlinuz.srec: vmlinux
+	+@$(call makezboot,$@)
+
+vmlinux.bin: $(vmlinux-32)
+	+@$(call makeboot,$@)
+ifeq ($(CONFIG_PULLOUT_INITRAMFS), y)
+	@./scripts/packramfs initramfs.bin
+endif
+
+vmlinux.ecoff: $(vmlinux-32)
+	+@$(call makeboot,$@)
+
+vmlinux.srec: $(vmlinux-32)
+	+@$(call makeboot,$@)
+
+ifeq ($(CONFIG_PULLOUT_INITRAMFS), y)
+initramfs.bin: usr/initramfs_data.cpio.gz
+	@./scripts/packramfs initramfs.bin
+endif
+
+CLEAN_FILES += vmlinux.ecoff \
+               vmlinux.srec
+
+ifeq ($(CONFIG_PULLOUT_INITRAMFS), y)
+CLEAN_FILES += vmlinux.img \
+               initramfs.img \
+               initramfs.bin
+endif
 
 
-CLEAN_FILES += vmlinux.32 vmlinux.64
 
 archprepare:
 ifdef CONFIG_MIPS32_N32

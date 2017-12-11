@@ -54,8 +54,13 @@ enum fixed_addresses {
 #endif
 #ifdef CONFIG_HIGHMEM
 	/* reserved pte's for temporary kernel mappings */
+#ifdef CONFIG_MSTAR_CHIP
+	FIX_KMAP_BEGIN = FIX_CMAP_END + FIX_N_COLOURS,
+	FIX_KMAP_END = FIX_KMAP_BEGIN+(KM_TYPE_NR*NR_CPUS*FIX_N_COLOURS)-1,
+#else
 	FIX_KMAP_BEGIN = FIX_CMAP_END + 1,
 	FIX_KMAP_END = FIX_KMAP_BEGIN+(KM_TYPE_NR*NR_CPUS)-1,
+#endif
 #endif
 	__end_of_fixed_addresses
 };

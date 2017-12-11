@@ -1040,7 +1040,11 @@ static void musb_shutdown(struct platform_device *pdev)
  */
 #if defined(CONFIG_USB_MUSB_TUSB6010) || defined(CONFIG_USB_MUSB_OMAP2PLUS) \
 	|| defined(CONFIG_USB_MUSB_AM35X)
+#ifdef CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_COMMON
+static ushort __initdata fifo_mode = 3;
+#else	// CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_COMMON
 static ushort __initdata fifo_mode = 4;
+#endif	// CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_COMMON
 #elif defined(CONFIG_USB_MUSB_UX500)
 static ushort __initdata fifo_mode = 5;
 #else
@@ -1086,12 +1090,22 @@ static struct musb_fifo_cfg __initdata mode_2_cfg[] = {
 
 /* mode 3 - fits in 4KB */
 static struct musb_fifo_cfg __initdata mode_3_cfg[] = {
+#ifdef CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_COMMON
+{ .hw_ep_num = 1, .style = FIFO_TX,   .maxpacket = 512, .mode = BUF_DOUBLE,},
+{ .hw_ep_num = 1, .style = FIFO_RX,   .maxpacket = 512, .mode = BUF_DOUBLE,},
+{ .hw_ep_num = 2, .style = FIFO_TX,   .maxpacket = 512, .mode = BUF_DOUBLE,},
+{ .hw_ep_num = 2, .style = FIFO_RX,   .maxpacket = 512, .mode = BUF_DOUBLE,},
+{ .hw_ep_num = 3, .style = FIFO_TX,   .maxpacket = 512, .mode = BUF_DOUBLE,},
+{ .hw_ep_num = 3, .style = FIFO_RX,   .maxpacket = 512, .mode = BUF_DOUBLE,},
+{ .hw_ep_num = 13, .style = FIFO_RXTX, .maxpacket = 4096, },
+#else	// CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_COMMON
 { .hw_ep_num = 1, .style = FIFO_TX,   .maxpacket = 512, .mode = BUF_DOUBLE, },
 { .hw_ep_num = 1, .style = FIFO_RX,   .maxpacket = 512, .mode = BUF_DOUBLE, },
 { .hw_ep_num = 2, .style = FIFO_TX,   .maxpacket = 512, },
 { .hw_ep_num = 2, .style = FIFO_RX,   .maxpacket = 512, },
 { .hw_ep_num = 3, .style = FIFO_RXTX, .maxpacket = 256, },
 { .hw_ep_num = 4, .style = FIFO_RXTX, .maxpacket = 256, },
+#endif	// CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_COMMON
 };
 
 /* mode 4 - fits in 16KB */

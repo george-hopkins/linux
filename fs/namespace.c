@@ -1355,7 +1355,9 @@ static int do_umount(struct vfsmount *mnt, int flags)
  * We now support a flag for forced unmount like the other 'big iron'
  * unixes. Our API is identical to OSF/1 to avoid making a mess of AMD
  */
-
+#if CONFIG_FCOUNT_DEBUG
+extern void check_files_count(struct super_block *sb, struct vfsmount *mnt);
+#endif
 SYSCALL_DEFINE2(umount, char __user *, name, int, flags)
 {
 	struct path path;
@@ -1386,6 +1388,15 @@ dput_and_out:
 	/* we mustn't call path_put() as that would clear mnt_expiry_mark */
 	dput(path.dentry);
 	mntput_no_expire(path.mnt);
+#if CONFIG_FCOUNT_DEBUG
+   if( retval != 0 )
+   {
+   	   printk("\n------------------------------------------\n");
+   	   printk("retval : %d\n", retval);
+   	   printk("------------------------------------------\n");
+       check_files_count(path.mnt->mnt_sb, path.mnt);
+   }
+#endif
 out:
 	return retval;
 }
@@ -2283,13 +2294,27 @@ int copy_mount_string(const void __user *data, char **where)
  * Therefore, if this magic number is present, it carries no information
  * and must be discarded.
  */
+
+#ifdef CONFIG_MOUNT_SECURITY
+/* 
+ * Devices in this list will not be applied "noexec" option.
+ * All device will be applied "noexec" option to protect system security
+ * except some devices for system
+ * */
+char *allowedDEV[] = {"bml", "stl", "mmcblk", "dev/root",
+		"proc", "rootfs", "sysfs", "tmpfs", "none", 
+		"END" };
+#endif
+
 long do_mount(char *dev_name, char *dir_name, char *type_page,
 		  unsigned long flags, void *data_page)
 {
 	struct path path;
 	int retval = 0;
 	int mnt_flags = 0;
-
+#ifdef CONFIG_MOUNT_SECURITY
+	int i = 0, numOfDev = 0;
+#endif
 	/* Discard magic */
 	if ((flags & MS_MGC_MSK) == MS_MGC_VAL)
 		flags &= ~MS_MGC_MSK;
@@ -2316,6 +2341,20 @@ long do_mount(char *dev_name, char *dir_name, char *type_page,
 	if (!(flags & MS_NOATIME))
 		mnt_flags |= MNT_RELATIME;
 
+#ifdef CONFIG_MOUNT_SECURITY
+	/* Apply MNT_NOEXEC option except some devices for system */
+	numOfDev = sizeof(allowedDEV)/sizeof(allowedDEV[0]);
+	
+	for( i = 0 ; i < numOfDev  ; i++) {
+		if(strstr(dev_name, allowedDEV[i]) != NULL)
+			break;
+	}
+	
+	if( i == numOfDev ) {
+		mnt_flags |= MNT_NOEXEC;
+	}
+#endif
+
 	/* Separate the per-mountpoint flags */
 	if (flags & MS_NOSUID)
 		mnt_flags |= MNT_NOSUID;
@@ -2336,10 +2375,19 @@ long do_mount(char *dev_name, char *dir_name, char *type_page,
 		   MS_NOATIME | MS_NODIRATIME | MS_RELATIME| MS_KERNMOUNT |
 		   MS_STRICTATIME);
 
+#ifdef CONFIG_MOUNT_SECURITY
+	if (flags & MS_BIND) {
+		flags &= ~MS_BIND;
+		printk("\033[31mERROR : BIND option was called with - %s -\033[0m\n", current->comm);
+		printk("\033[31m  BIND option can make potential problem of system security.\033[0m\n");
+		printk("\033[31m  You can't use this dangerous function on embedded system.\033[0m\n");
+	}
+#endif
+
 	if (flags & MS_REMOUNT)
 		retval = do_remount(&path, flags & ~MS_REMOUNT, mnt_flags,
 				    data_page);
-	else if (flags & MS_BIND)
+	else if (flags & MS_BIND) 
 		retval = do_loopback(&path, dev_name, flags & MS_REC);
 	else if (flags & (MS_SHARED | MS_PRIVATE | MS_SLAVE | MS_UNBINDABLE))
 		retval = do_change_type(&path, flags);

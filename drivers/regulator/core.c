@@ -275,7 +275,37 @@ static ssize_t regulator_uV_show(struct device *dev,
 
 	return ret;
 }
+#if defined(CONFIG_ARCH_CCEP)
+static ssize_t regulator_uV_store(struct device *dev,
+				struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct regulator_dev *rdev = dev_get_drvdata(dev);
+	unsigned int microvolt;
+	unsigned int ret;
+	unsigned selector;
+	int iret;
+
+	mutex_lock(&rdev->mutex);
+
+	ret = sscanf(buf, "%u", &microvolt);
+	if (ret != 1) {
+		printk(KERN_ERR "%s invalid arg\n", __func__);
+		return -EINVAL;
+	}
+
+	iret = rdev->desc->ops->set_voltage(rdev, microvolt, microvolt + 10000, &selector);
+	if (iret < 0) {
+		printk("set_voltage error! ret=%d\n", iret);
+	}
+
+	mutex_unlock(&rdev->mutex);
+	
+	return count;
+}
+static DEVICE_ATTR(microvolts, 0644, regulator_uV_show, regulator_uV_store);
+#else
 static DEVICE_ATTR(microvolts, 0444, regulator_uV_show, NULL);
+#endif
 
 static ssize_t regulator_uA_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
@@ -1749,6 +1779,8 @@ int regulator_set_voltage(struct regulator *regulator, int min_uV, int max_uV)
 {
 	struct regulator_dev *rdev = regulator->rdev;
 	int ret = 0;
+	int old_min = regulator->min_uV;
+	int old_max = regulator->max_uV;
 
 	mutex_lock(&rdev->mutex);
 
@@ -1778,6 +1810,10 @@ int regulator_set_voltage(struct regulator *regulator, int min_uV, int max_uV)
 		goto out;
 
 	ret = _regulator_do_set_voltage(rdev, min_uV, max_uV);
+	if (ret < 0) {
+		regulator->min_uV = old_min;
+		regulator->max_uV = old_max;
+	}
 
 out:
 	mutex_unlock(&rdev->mutex);

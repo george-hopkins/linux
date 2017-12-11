@@ -313,7 +313,7 @@ xlog_header_check_recover(
 		xlog_header_check_dump(mp, head);
 		XFS_ERROR_REPORT("xlog_header_check_recover(1)",
 				 XFS_ERRLEVEL_HIGH, mp);
-		return XFS_ERROR(EFSCORRUPTED);
+		return XFS_ERROR(EFMT);
 	} else if (unlikely(!uuid_equal(&mp->m_sb.sb_uuid, &head->h_fs_uuid))) {
 		xfs_warn(mp,
 	"dirty log entry has mismatched uuid - can't recover");
@@ -2810,7 +2810,10 @@ xlog_recover_process_data(
 	num_logops = be32_to_cpu(rhead->h_num_logops);
 
 	/* check the log format matches our own - else we can't recover */
-	if (xlog_header_check_recover(log->l_mp, rhead))
+#define ERECOVER 200
+	if (xlog_header_check_recover(log->l_mp, rhead) == XFS_ERROR(EFMT))
+		return (XFS_ERROR(ERECOVER));
+	else if (xlog_header_check_recover(log->l_mp, rhead))
 		return (XFS_ERROR(EIO));
 
 	while ((dp < lp) && num_logops) {

@@ -232,6 +232,7 @@ nfs_file_read(struct kiocb *iocb, const struct iovec *iov,
 	struct inode * inode = dentry->d_inode;
 	ssize_t result;
 	size_t count = iov_length(iov, nr_segs);
+	struct nfs_open_context *ctx = nfs_file_open_context(iocb->ki_filp);
 
 	if (iocb->ki_filp->f_flags & O_DIRECT)
 		return nfs_file_direct_read(iocb, iov, nr_segs, pos);
@@ -239,6 +240,8 @@ nfs_file_read(struct kiocb *iocb, const struct iovec *iov,
 	dprintk("NFS: read(%s/%s, %lu@%lu)\n",
 		dentry->d_parent->d_name.name, dentry->d_name.name,
 		(unsigned long) count, (unsigned long) pos);
+
+	ctx->mode = iocb->ki_filp->f_mode;
 
 	result = nfs_revalidate_mapping(inode, iocb->ki_filp->f_mapping);
 	if (!result) {

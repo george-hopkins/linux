@@ -206,6 +206,9 @@
 /* Xilinx PSS UART */
 #define PORT_XUARTPS	98
 
+/* ARCH_CCEP UART */
+#define PORT_SDP		99
+
 #ifdef __KERNEL__
 
 #include <linux/compiler.h>

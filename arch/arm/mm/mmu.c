@@ -727,6 +727,10 @@ void __init iotable_init(struct map_desc *io_desc, int nr)
 		create_mapping(io_desc + i);
 }
 
+#ifdef CONFIG_MSTAR_CHIP
+EXPORT_SYMBOL(iotable_init);
+#endif
+
 static void * __initdata vmalloc_min = (void *)(VMALLOC_END - SZ_128M);
 
 /*
@@ -757,7 +761,11 @@ static int __init early_vmalloc(char *arg)
 }
 early_param("vmalloc", early_vmalloc);
 
+#ifdef CONFIG_CMA
+phys_addr_t lowmem_limit __initdata = 0;
+#else
 static phys_addr_t lowmem_limit __initdata = 0;
+#endif
 
 void __init sanity_check_meminfo(void)
 {

@@ -27,9 +27,17 @@
 #include <asm/irq_regs.h>
 #include <linux/perf_event.h>
 
+#ifdef CONFIG_SUPPORT_REBOOT
+extern int micom_reboot( void );
+extern int reboot_permit(void);
+extern int print_permit(void);
+#endif
+
 int watchdog_enabled = 1;
 int __read_mostly watchdog_thresh = 10;
-
+#ifdef CONFIG_IRQ_TIME
+extern void show_irq(void);
+#endif
 static DEFINE_PER_CPU(unsigned long, watchdog_touch_ts);
 static DEFINE_PER_CPU(struct task_struct *, softlockup_watchdog);
 static DEFINE_PER_CPU(struct hrtimer, watchdog_hrtimer);
@@ -295,6 +303,13 @@ static enum hrtimer_restart watchdog_timer_fn(struct hrtimer *hrtimer)
 		if (__this_cpu_read(soft_watchdog_warn) == true)
 			return HRTIMER_RESTART;
 
+#ifdef CONFIG_SUPPORT_REBOOT
+		if( !print_permit() && reboot_permit() )
+		{
+			micom_reboot();
+			while(1);
+		}
+#endif
 		printk(KERN_ERR "BUG: soft lockup - CPU#%d stuck for %us! [%s:%d]\n",
 			smp_processor_id(), duration,
 			current->comm, task_pid_nr(current));
@@ -304,13 +319,22 @@ static enum hrtimer_restart watchdog_timer_fn(struct hrtimer *hrtimer)
 			show_regs(regs);
 		else
 			dump_stack();
+#ifdef CONFIG_IRQ_TIME
+		show_irq();
+#endif
 
+#ifdef CONFIG_SUPPORT_REBOOT
+		if( reboot_permit() )
+		{
+			micom_reboot();
+			while(1);
+		}
+#endif
 		if (softlockup_panic)
 			panic("softlockup: hung tasks");
 		__this_cpu_write(soft_watchdog_warn, true);
 	} else
 		__this_cpu_write(soft_watchdog_warn, false);
-
 	return HRTIMER_RESTART;
 }
 

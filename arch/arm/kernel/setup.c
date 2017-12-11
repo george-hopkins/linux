@@ -76,6 +76,10 @@ extern void paging_init(struct machine_desc *desc);
 extern void sanity_check_meminfo(void);
 extern void reboot_setup(char *str);
 
+#if defined(CONFIG_MSTAR_AMBER3) || defined(CONFIG_MSTAR_EDISON)
+extern void setup_early_printk(void);
+#endif
+
 unsigned int processor_id;
 EXPORT_SYMBOL(processor_id);
 unsigned int __machine_arch_type __read_mostly;
@@ -485,6 +489,10 @@ int __init arm_add_memory(phys_addr_t start, unsigned long size)
 	return 0;
 }
 
+#if defined(CONFIG_MSTAR_AMBER3) || defined(CONFIG_MSTAR_EDISON)
+EXPORT_SYMBOL(arm_add_memory);
+#endif
+
 /*
  * Pick out the memory size.  We look for mem=size@start,
  * where start and size are "size[KkMm]"
@@ -735,6 +743,10 @@ static int __init customize_machine(void)
 }
 arch_initcall(customize_machine);
 
+#if defined(CONFIG_MSTAR_AMBER3) || defined(CONFIG_MSTAR_EDISON)
+extern void __init prom_meminit(void);
+#endif
+
 #ifdef CONFIG_KEXEC
 static inline unsigned long long get_total_mem(void)
 {
@@ -825,6 +837,9 @@ static struct machine_desc * __init setup_machine_tags(unsigned int nr)
 		 * is located in the first MB of RAM.  Anything else will
 		 * fault and silently hang the kernel at this point.
 		 */
+#ifdef CONFIG_ARM_PATCH_PHYS_VIRT
+		mdesc->boot_params += PHYS_OFFSET;
+#endif
 		if (mdesc->boot_params < PHYS_OFFSET ||
 		    mdesc->boot_params >= PHYS_OFFSET + SZ_1M) {
 			printk(KERN_WARNING
@@ -873,6 +888,9 @@ static struct machine_desc * __init setup_machine_tags(unsigned int nr)
 	return mdesc;
 }
 
+#if defined(CONFIG_MSTAR_AMBER3) || defined(CONFIG_MSTAR_EDISON)
+extern void __init prom_meminit(void);
+#endif
 
 void __init setup_arch(char **cmdline_p)
 {
@@ -901,13 +919,17 @@ void __init setup_arch(char **cmdline_p)
 
 	parse_early_param();
 
+#if defined(CONFIG_MSTAR_AMBER3) || defined(CONFIG_MSTAR_EDISON)
+	prom_meminit();
+#endif
 	sanity_check_meminfo();
+
 	arm_memblock_init(&meminfo, mdesc);
 
 	paging_init(mdesc);
 	request_standard_resources(mdesc);
 
-	unflatten_device_tree();
+unflatten_device_tree();
 
 #ifdef CONFIG_SMP
 	if (is_smp())
@@ -979,6 +1001,10 @@ static const char *hwcap_str[] = {
 	"neon",
 	"vfpv3",
 	"vfpv3d16",
+        "tls",
+        "vfpv4",
+        "idiva",
+        "idivt",
 	NULL
 };
 
@@ -1066,3 +1092,11 @@ const struct seq_operations cpuinfo_op = {
 	.stop	= c_stop,
 	.show	= c_show
 };
+
+#ifdef CONFIG_BOOTPROFILE
+/* pass to boot chart solution */
+const char *bc_get_cpu_name(void)
+{
+	return cpu_name;
+}
+#endif /* CONFIG_BOOTPROFILE */

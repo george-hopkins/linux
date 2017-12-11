@@ -1462,7 +1462,7 @@ static struct attribute_group ctrl_attr_grp = {
 static int omapfb_register_sysfs(struct omapfb_device *fbdev)
 {
 	int r;
-
+	
 	if ((r = device_create_file(fbdev->dev, &dev_attr_caps_num)))
 		goto fail0;
 

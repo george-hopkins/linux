@@ -32,6 +32,9 @@ struct usbnet {
 	void			*driver_priv;
 	wait_queue_head_t	*wait;
 	struct mutex		phy_mutex;
+#ifdef CONFIG_SAMSUNG_HOST_DUAL_EEM_SUPPORT
+    	u32                 	intf_id;    /* <Added to support Dual-EEM> intf_id identify each interface */
+#endif
 	unsigned char		suspend_count;
 
 	/* i/o info: pipes etc */

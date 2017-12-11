@@ -15,6 +15,7 @@
 #include <linux/range.h>
 #include <linux/pfn.h>
 #include <linux/bit_spinlock.h>
+#include <linux/shrinker.h>
 
 struct mempolicy;
 struct anon_vma;
@@ -363,6 +364,9 @@ static inline struct page *compound_head(struct page *page)
 static inline void reset_page_mapcount(struct page *page)
 {
 	atomic_set(&(page)->_mapcount, -1);
+#ifdef CONFIG_PTMU_TRACE
+	RESET_RMAP_OWNER(page);   /* reset the owner */
+#endif
 }
 
 static inline int page_mapcount(struct page *page)
@@ -573,7 +577,18 @@ static inline pte_t maybe_mkwrite(pte_t pte, struct vm_area_struct *vma)
  * The zone field is never updated after free_area_init_core()
  * sets it, so none of the operations on it need to be atomic.
  */
-
+/* functions related to RSS quota */
+int _get_group_idx( struct mm_struct *mm, unsigned long flags,
+               struct file *file, unsigned long start, unsigned long end );
+int get_group_idx(struct vm_area_struct *vma);
+void inc_rss_counter(struct vm_area_struct *vma, unsigned long value);
+void dec_rss_counter(struct vm_area_struct *vma, unsigned long value);
+int get_rss_cnt(struct mm_struct *mm, int group, unsigned long *cur, unsigned long *max);
+int vmg_enough_memory(struct mm_struct *mm, int group, long pages);
+int check_enough_pages(unsigned long required);
+int is_page_present(struct mm_struct *mm, unsigned long address);
+int get_vma_rss(struct vm_area_struct *vma);
+/* --- */
 
 /*
  * page->flags layout:
@@ -870,6 +885,7 @@ extern bool skip_free_areas_node(unsigned int flags, int nid);
 
 int shmem_lock(struct file *file, int lock, struct user_struct *user);
 struct file *shmem_file_setup(const char *name, loff_t size, unsigned long flags);
+void vdshmem_set_file(struct vm_area_struct *vma, struct file *file);
 int shmem_zero_setup(struct vm_area_struct *);
 
 extern int can_do_mlock(void);
@@ -1130,43 +1146,9 @@ static inline void sync_mm_rss(struct task_struct *task, struct mm_struct *mm)
 }
 #endif
 
-/*
- * This struct is used to pass information from page reclaim to the shrinkers.
- * We consolidate the values for easier extention later.
- */
-struct shrink_control {
-	gfp_t gfp_mask;
-
-	/* How many slab objects shrinker() should scan and try to reclaim */
-	unsigned long nr_to_scan;
-};
-
-/*
- * A callback you can register to apply pressure to ageable caches.
- *
- * 'sc' is passed shrink_control which includes a count 'nr_to_scan'
- * and a 'gfpmask'.  It should look through the least-recently-used
- * 'nr_to_scan' entries and attempt to free them up.  It should return
- * the number of objects which remain in the cache.  If it returns -1, it means
- * it cannot do any scanning at this time (eg. there is a risk of deadlock).
- *
- * The 'gfpmask' refers to the allocation we are currently trying to
- * fulfil.
- *
- * Note that 'shrink' will be passed nr_to_scan == 0 when the VM is
- * querying the cache size, so a fastpath for that case is appropriate.
- */
-struct shrinker {
-	int (*shrink)(struct shrinker *, struct shrink_control *sc);
-	int seeks;	/* seeks to recreate an obj */
-
-	/* These are for internal use */
-	struct list_head list;
-	long nr;	/* objs pending delete */
-};
-#define DEFAULT_SEEKS 2 /* A good number if you don't know better. */
-extern void register_shrinker(struct shrinker *);
-extern void unregister_shrinker(struct shrinker *);
+#ifdef CONFIG_ANDROID_LOW_MEMORY_KILLER
+extern void calculate_lowmemkiller_params(long minw_pages, long highw_pages);
+#endif /* CONFIG_ANDROID_LOW_MEMORY_KILLER */
 
 int vma_wants_writenotify(struct vm_area_struct *vma);
 
@@ -1203,6 +1185,19 @@ int __pmd_alloc(struct mm_struct *mm, pud_t *pud, unsigned long address);
 int __pte_alloc(struct mm_struct *mm, struct vm_area_struct *vma,
 		pmd_t *pmd, unsigned long address);
 int __pte_alloc_kernel(pmd_t *pmd, unsigned long address);
+
+#ifdef CONFIG_PTMU_TRACE
+int do_thread_page_count(struct mm_struct *, struct vm_area_struct *, struct page *,
+			 unsigned long, int);
+#define inc_ptmu_counter(mm, vma, page, addr, v)   \
+				do_thread_page_count(mm, vma, page, addr, v)
+#define dec_ptmu_counter(mm, vma, page, addr, v)   \
+				do_thread_page_count(mm, vma, page, addr, -v)
+#else
+#define inc_ptmu_counter(mm, vma, page, addr, v)
+#define dec_ptmu_counter(mm, vma, page, addr, v)
+#endif
+
 
 /*
  * The following ifdef needed to get the 4level-fixup.h header to work.
@@ -1468,7 +1463,11 @@ int write_one_page(struct page *page, int wait);
 void task_dirty_inc(struct task_struct *tsk);
 
 /* readahead.c */
+#ifdef CONFIG_BD_CACHE_ENABLED
+#define VM_MAX_READAHEAD       512     /* kbytes */
+#else
 #define VM_MAX_READAHEAD	128	/* kbytes */
+#endif
 #define VM_MIN_READAHEAD	16	/* kbytes (includes current page) */
 
 int force_page_cache_readahead(struct address_space *mapping, struct file *filp,
@@ -1635,7 +1634,6 @@ int vmemmap_populate_basepages(struct page *start_page,
 						unsigned long pages, int node);
 int vmemmap_populate(struct page *start_page, unsigned long pages, int node);
 void vmemmap_populate_print_last(void);
-
 
 enum mf_flags {
 	MF_COUNT_INCREASED = 1 << 0,

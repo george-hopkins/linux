@@ -328,6 +328,48 @@ xfs_bunmapi(
 	xfs_bmap_free_t		*flist,		/* i/o: list extents to free */
 	int			*done);		/* set if not done yet */
 
+#ifdef CONFIG_XFS_FS_TRUNCATE_RANGE
+/*
+ * Unmap (remove) blocks from a file.
+ * If nexts is nonzero then the number of extents to remove is limited to
+ * that value.  If not all extents in the block range can be removed then
+ * done is set.
+ */
+int                                             /* error */
+xfs_bmap_trunc(
+        struct xfs_trans        *tp,            /* transaction pointer */
+        struct xfs_inode        *ip,            /* incore inode */
+        xfs_fileoff_t           bno,            /* starting offset to unmap */
+        xfs_filblks_t           len,            /* length to unmap in file */
+        int                     flags,          /* XFS_BMAPI_... */
+        xfs_extnum_t            nexts,          /* number of extents max */
+        xfs_fsblock_t           *firstblock,    /* first allocated block
+                                                   controls a.g. for allocs */
+        xfs_bmap_free_t         *flist,         /* i/o: list extents to free */
+        int                     *done);         /* set if not done yet */
+
+#endif
+#ifdef CONFIG_XFS_FS_SPLIT
+int                                             /* error */
+xfs_bmap_split(
+        struct xfs_trans        *tp,            /* transaction pointer */
+        struct xfs_inode        *ip,            /* incore inode */
+        xfs_fileoff_t           bno,            /* starting offset to unmap */
+        xfs_filblks_t           len,            /* length to unmap in file */
+        int                     flags,          /* XFS_BMAPI_... */
+        xfs_extnum_t            nexts,          /* number of extents max */
+        xfs_fsblock_t           *firstblock,    /* first allocated block
+                                                   controls a.g. for allocs */
+        xfs_bmap_free_t         *flist,         /* i/o: list extents to free */
+        int                     *done,
+        xfs_split_data_t        *split_data);           /* set if not done yet */
+
+void xfs_del_split_flist(xfs_bmap_free_t         *flist, /* free item list header */
+        xfs_bmap_free_item_t    *prev,  /* previous item on list, if any */
+        xfs_bmap_free_item_t    *free);  /* list item to be freed */
+
+#endif
+
 /*
  * Check an extent list, which has just been read, for
  * any bit in the extent flag field.

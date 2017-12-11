@@ -221,7 +221,11 @@ static char *usb_dump_endpoint_descriptor(int speed, char *start, char *end,
 		break;
 	case USB_ENDPOINT_XFER_INT:
 		type = "Int.";
+#ifdef CONFIG_NVT_NT72568
+		if (speed == USB_SPEED_HIGH)
+#else
 		if (speed == USB_SPEED_HIGH || speed == USB_SPEED_SUPER)
+#endif
 			interval = 1 << (desc->bInterval - 1);
 		else
 			interval = desc->bInterval;
@@ -229,8 +233,12 @@ static char *usb_dump_endpoint_descriptor(int speed, char *start, char *end,
 	default:	/* "can't happen" */
 		return start;
 	}
+#ifdef CONFIG_NVT_NT72568
+	interval *= (speed == USB_SPEED_HIGH) ? 125 : 1000;
+#else
 	interval *= (speed == USB_SPEED_HIGH ||
 		     speed == USB_SPEED_SUPER) ? 125 : 1000;
+#endif
 	if (interval % 1000)
 		unit = 'u';
 	else {
@@ -524,8 +532,10 @@ static ssize_t usb_device_dump(char __user **buffer, size_t *nbytes,
 	case USB_SPEED_WIRELESS:	/* Wireless has no real fixed speed */
 	case USB_SPEED_HIGH:
 		speed = "480"; break;
+#ifndef CONFIG_NVT_NT72568
 	case USB_SPEED_SUPER:
 		speed = "5000"; break;
+#endif
 	default:
 		speed = "??";
 	}
@@ -542,10 +552,13 @@ static ssize_t usb_device_dump(char __user **buffer, size_t *nbytes,
 	/* If this is the root hub, display the bandwidth information */
 	if (level == 0) {
 		int	max;
-
+#ifndef CONFIG_NVT_NT72568
 		/* super/high speed reserves 80%, full/low reserves 90% */
 		if (usbdev->speed == USB_SPEED_HIGH ||
 		    usbdev->speed == USB_SPEED_SUPER)
+#else
+		if (usbdev->speed == USB_SPEED_HIGH)
+#endif
 			max = 800;
 		else
 			max = FRAME_TIME_MAX_USECS_ALLOC;

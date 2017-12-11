@@ -208,6 +208,7 @@ static int snd_usbmidi_urb_error(int status)
 	case -EPROTO:
 	case -ETIME:
 	case -EILSEQ:
+	case -EPIPE:
 		return -EIO;
 	default:
 		snd_printk(KERN_ERR "urb status %d\n", status);

@@ -160,6 +160,12 @@
 #define	gadget_is_renesas_usbhs(g) 0
 #endif
 
+#if defined(CONFIG_USB_GADGET_SDP_OTGD) || defined(CONFIG_USB_GADGET_SDP_HSOTG)
+#define gadget_is_sdp_otg(g) (!strcmp("sdp-otg", (g)->name))
+#else
+#define gadget_is_sdp_otg(g) 0
+#endif
+
 /**
  * usb_gadget_controller_number - support bcdDevice id convention
  * @gadget: the controller being driven
@@ -223,6 +229,8 @@ static inline int usb_gadget_controller_number(struct usb_gadget *gadget)
 		return 0x29;
 	else if (gadget_is_s3c_hsudc(gadget))
 		return 0x30;
+	else if (gadget_is_sdp_otg(gadget))
+		return 0x31;
 
 	return -ENOENT;
 }
@@ -245,5 +253,18 @@ static inline bool gadget_supports_altsettings(struct usb_gadget *gadget)
 	/* Everything else is *presumably* fine ... */
 	return true;
 }
+
+#ifdef CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_COMMON
+/**
+ * gadget_dma32 - return true if we want buffer aligned on 32 bits (for dma)
+ * @gadget: the gadget in question
+ */
+static inline bool gadget_dma32(struct usb_gadget *gadget)
+{
+	if(gadget_is_musbhdrc(gadget))
+		return true;
+	return false;
+}
+#endif	// CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_COMMON
 
 #endif /* __GADGET_CHIPS_H */

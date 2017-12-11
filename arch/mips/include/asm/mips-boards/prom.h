@@ -26,6 +26,16 @@
 #ifndef _MIPS_PROM_H
 #define _MIPS_PROM_H
 
+#if (defined(CONFIG_MSTAR_AMBER1) || defined(CONFIG_MSTAR_EMERALD))
+typedef enum
+{
+    LINUX_MEM,
+    EMAC_MEM,
+    MPOOL_MEM,
+    LINUX_MEM2,
+}BOOT_MEM_INFO;
+#endif
+
 extern char *prom_getcmdline(void);
 extern char *prom_getenv(char *name);
 extern void prom_init_cmdline(void);
@@ -35,6 +45,9 @@ extern void mips_display_message(const char *str);
 extern void mips_display_word(unsigned int num);
 extern void mips_scroll_message(void);
 extern int get_ethernet_addr(char *ethernet_addr);
+#if (defined(CONFIG_MSTAR_AMBER1) || defined(CONFIG_MSTAR_EMERALD))
+extern void get_boot_mem_info(BOOT_MEM_INFO type, unsigned int *addr, unsigned int *len);
+#endif
 
 /* Memory descriptor management. */
 #define PROM_MAX_PMEMBLOCKS    32

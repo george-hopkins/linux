@@ -39,7 +39,9 @@
  */
 
 #include <linux/kernel_stat.h>
+#include <linux/seq_file.h>
 #include <linux/mm.h>
+#include <linux/proc_fs.h>
 #include <linux/hugetlb.h>
 #include <linux/mman.h>
 #include <linux/swap.h>
@@ -913,6 +915,7 @@ copy_one_pte(struct mm_struct *dst_mm, struct mm_struct *src_mm,
 	if (page) {
 		get_page(page);
 		page_dup_rmap(page);
+		inc_ptmu_counter(dst_mm, vma, page, addr, 1);
 		if (PageAnon(page))
 			rss[MM_ANONPAGES]++;
 		else
@@ -974,6 +977,7 @@ again:
 	spin_unlock(src_ptl);
 	pte_unmap(orig_src_pte);
 	add_mm_rss_vec(dst_mm, rss);
+        inc_rss_counter(vma, rss[0] + rss[1]);  /* VD_SP */
 	pte_unmap_unlock(orig_dst_pte, dst_ptl);
 	cond_resched();
 
@@ -1169,6 +1173,7 @@ again:
 					mark_page_accessed(page);
 				rss[MM_FILEPAGES]--;
 			}
+			dec_ptmu_counter(mm, vma, page, addr, 1);
 			page_remove_rmap(page);
 			if (unlikely(page_mapcount(page) < 0))
 				print_bad_pte(vma, addr, ptent, page);
@@ -1198,6 +1203,7 @@ again:
 	} while (pte++, addr += PAGE_SIZE, addr != end);
 
 	add_mm_rss_vec(mm, rss);
+        inc_rss_counter(vma, (rss[MM_FILEPAGES]+rss[MM_ANONPAGES]));      /* VD_SP */
 	arch_leave_lazy_mmu_mode();
 	pte_unmap_unlock(start_pte, ptl);
 
@@ -1427,6 +1433,64 @@ int zap_vma_ptes(struct vm_area_struct *vma, unsigned long address,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(zap_vma_ptes);
+
+#ifdef CONFIG_SCHED_HISTORY_ON_DDR
+struct page *simple_follow_page(struct vm_area_struct *vma, unsigned long address,
+		unsigned int flags)
+{
+	pgd_t *pgd;
+	pud_t *pud;
+	pmd_t *pmd;
+	pte_t *ptep, pte;
+	struct page *page;
+	struct mm_struct *mm = vma->vm_mm;
+
+	page = NULL;
+	pgd = pgd_offset(mm, address);
+	if (pgd_none(*pgd) || unlikely(pgd_bad(*pgd)))
+		goto no_page_table;
+
+	pud = pud_offset(pgd, address);
+	if (pud_none(*pud))
+		goto no_page_table;
+
+	if (unlikely(pud_bad(*pud)))
+		goto no_page_table;
+
+	pmd = pmd_offset(pud, address);
+	if (pmd_none(*pmd))
+		goto no_page_table;
+
+	if (unlikely(pmd_bad(*pmd)))
+		goto no_page_table;
+
+	ptep = pte_offset_map(pmd, address);
+
+	pte = *ptep;
+	if (!pte_present(pte))
+		goto no_page;
+
+	page = vm_normal_page(vma, address, pte);
+	if (unlikely(!page)) {
+		if ((flags & FOLL_DUMP) ||
+				!is_zero_pfn(pte_pfn(pte)))
+			goto bad_page;
+		page = pte_page(pte);
+	}
+
+	return page;
+
+bad_page:
+	return 0;
+
+no_page:
+	if (!pte_none(pte))
+		return 0;
+
+no_page_table:
+	return 0;
+}
+#endif
 
 /**
  * follow_page - look up a page descriptor from a user-virtual address
@@ -2024,7 +2088,9 @@ static int insert_page(struct vm_area_struct *vma, unsigned long addr,
 	get_page(page);
 	inc_mm_counter_fast(mm, MM_FILEPAGES);
 	page_add_file_rmap(page);
+	inc_ptmu_counter(mm, vma, page, addr, 1);
 	set_pte_at(mm, addr, pte, mk_pte(page, prot));
+	inc_rss_counter(vma, 1);
 
 	retval = 0;
 	pte_unmap_unlock(pte, ptl);
@@ -2680,8 +2746,10 @@ gotten:
 				dec_mm_counter_fast(mm, MM_FILEPAGES);
 				inc_mm_counter_fast(mm, MM_ANONPAGES);
 			}
-		} else
+		} else {
 			inc_mm_counter_fast(mm, MM_ANONPAGES);
+                        inc_rss_counter(vma,1); /* VD_SP */
+                }
 		flush_cache_page(vma, address, pte_pfn(orig_pte));
 		entry = mk_pte(new_page, vma->vm_page_prot);
 		entry = maybe_mkwrite(pte_mkdirty(entry), vma);
@@ -2693,6 +2761,7 @@ gotten:
 		 */
 		ptep_clear_flush(vma, address, page_table);
 		page_add_new_anon_rmap(new_page, vma, address);
+		inc_ptmu_counter(mm, vma, new_page, address, 1);
 		/*
 		 * We call the notify macro here because, when using secondary
 		 * mmu page tables (such as kvm shadow page tables), we want the
@@ -2723,6 +2792,7 @@ gotten:
 			 * mapcount is visible. So transitively, TLBs to
 			 * old page will be flushed before it can be reused.
 			 */
+			dec_ptmu_counter(mm, vma, old_page, address, 1);
 			page_remove_rmap(old_page);
 		}
 
@@ -2989,6 +3059,7 @@ static int do_swap_page(struct mm_struct *mm, struct vm_area_struct *vma,
 
 	inc_mm_counter_fast(mm, MM_ANONPAGES);
 	dec_mm_counter_fast(mm, MM_SWAPENTS);
+	inc_rss_counter(vma,1); /* VD_SP */
 	pte = mk_pte(page, vma->vm_page_prot);
 	if ((flags & FAULT_FLAG_WRITE) && reuse_swap_page(page)) {
 		pte = maybe_mkwrite(pte_mkdirty(pte), vma);
@@ -2999,6 +3070,7 @@ static int do_swap_page(struct mm_struct *mm, struct vm_area_struct *vma,
 	flush_icache_page(vma, page);
 	set_pte_at(mm, address, page_table, pte);
 	do_page_add_anon_rmap(page, vma, address, exclusive);
+	inc_ptmu_counter(mm, vma, page, address, 1);
 	/* It's better to call commit-charge after rmap is established */
 	mem_cgroup_commit_charge_swapin(page, ptr);
 
@@ -3129,7 +3201,9 @@ static int do_anonymous_page(struct mm_struct *mm, struct vm_area_struct *vma,
 		goto release;
 
 	inc_mm_counter_fast(mm, MM_ANONPAGES);
+        inc_rss_counter(vma,1); /* VD_SP */
 	page_add_new_anon_rmap(page, vma, address);
+	inc_ptmu_counter(mm, vma, page, address, 1);
 setpte:
 	set_pte_at(mm, address, page_table, entry);
 
@@ -3278,10 +3352,14 @@ static int __do_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 			entry = maybe_mkwrite(pte_mkdirty(entry), vma);
 		if (anon) {
 			inc_mm_counter_fast(mm, MM_ANONPAGES);
+                        inc_rss_counter(vma,1); /* VD_SP */
 			page_add_new_anon_rmap(page, vma, address);
+			inc_ptmu_counter(mm, vma, page, address, 1);
 		} else {
 			inc_mm_counter_fast(mm, MM_FILEPAGES);
+                        inc_rss_counter(vma,1); /* VD_SP */
 			page_add_file_rmap(page);
+			inc_ptmu_counter(mm, vma, page, address, 1);
 			if (flags & FAULT_FLAG_WRITE) {
 				dirty_page = page;
 				get_page(dirty_page);
@@ -3919,6 +3997,901 @@ void might_fault(void)
 		might_lock_read(&current->mm->mmap_sem);
 }
 EXPORT_SYMBOL(might_fault);
+#endif
+
+#ifdef CONFIG_PTMU_TRACE
+#include <linux/personality.h>
+#include <linux/kthread.h>
+
+#ifndef MAX_PATH
+# define MAX_PATH 256
+#endif
+
+#define PTMU_MAJOR 1
+#define PTMU_MINOR 2
+
+#define MAX_FILT            256
+#define MAX_HIST_BUF_SIZE   65536
+
+#define ATOMIC_SET_MAX(max, cur){ \
+	int m = atomic_read(&max); \
+	int c = atomic_read(&cur); \
+	atomic_set(&max, m<c?c:m);\
+}
+
+#define TAG_FORMAT      "    |TGID  |PID   |TASK NAME       |CODE PAGES       |DATA PAGES       |STACK PAGES      |HEAP PAGES       |ANON PAGES       |TOTAL PAGES      |\n"
+#define TAG_LINE        "----|------|------|----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|\n"
+#define CONTENT_FORMAT  "%-4s|%-6u|%-6u|%-16s|%8d/%-8d|%8d/%-8d|%8d/%-8d|%8d/%-8d|%8d/%-8d|%8d/%-8d|\n"
+
+#define THREAD_LEN_MAX 15
+
+DEFINE_SPINLOCK(h_lock);
+DEFINE_SPINLOCK(f_lock);
+static int writep = 0;
+static struct page_usage_struct *hist_rng_buf[MAX_HIST_BUF_SIZE];
+struct _filt_s {
+	int n_sum;
+	bool monitor;
+	char *s_name;
+};
+static struct _filt_s filt_inclu[MAX_FILT] = {{0, 0, NULL}};
+static int s_pos = 0;
+static char delim[] = " \r\n";
+
+static int strsum(char * s)
+{
+	int sum = 0, i;
+	int len = strlen(s);
+	len = (len >= THREAD_LEN_MAX) ? THREAD_LEN_MAX : len;
+	for(i = 0; i < len ; i++)
+		sum += s[i];
+	return sum;
+}
+
+/**
+  * \brief  search the task name in the filter
+  *
+  * \param  str
+  *
+  * \return index of filter, max-index if not
+  */
+static int search_filter(char * str)
+{
+	int i;
+	int sum = 0;
+
+	spin_lock(&f_lock);
+
+	if(s_pos > 0) /* do only when there is some entry */
+		sum = strsum(str);
+
+	for(i = 0; i < s_pos; i++)
+	{
+		if(filt_inclu[i].n_sum)
+		{
+			if(sum == filt_inclu[i].n_sum)
+			{
+				if(filt_inclu[i].s_name)
+				{
+					if(strncmp(filt_inclu[i].s_name, 
+						   str,THREAD_LEN_MAX) == 0)
+					{
+						spin_unlock(&f_lock);
+						return (i |
+							(filt_inclu[i].monitor << 31));
+					}
+				}
+			}
+		}
+	}
+	spin_unlock(&f_lock);
+	return i;
+}
+
+static void do_inc_dec_page(struct page *page, struct page_usage_struct * pp_usage,
+			    struct mm_struct *mm, struct vm_area_struct *vma,
+			    unsigned long addr, int v)
+{
+	unsigned long flags = 0;
+	struct file *file = NULL;
+	file = vma->vm_file;
+	flags = vma->vm_flags;
+	if(v > 0)
+	{
+		/* code : (file && (r-xp)) */
+		if( file && (flags & VM_EXEC))
+		{
+			atomic_add(v, &pp_usage->cur_cp);
+			ATOMIC_SET_MAX(pp_usage->max_cp, pp_usage->cur_cp);
+			page->rmap_owner.p_flags = _code_seg;
+		}
+		/* data : (file && (rw-p)) */
+		else if(file && (((flags & VM_WRITE) == VM_WRITE) ||
+			((flags & VM_READ) == VM_READ)))
+		{
+			atomic_add(v, &pp_usage->cur_dp);
+			ATOMIC_SET_MAX(pp_usage->max_dp, pp_usage->cur_dp);
+			page->rmap_owner.p_flags = _data_seg;
+		}
+		/* {dec|inc}rement stack guard page depending on stack grows
+		 * {down|up}wards */
+		else if(
+			((vma->vm_flags & VM_STACK_FLAGS) &&
+			 (vma->vm_start <= mm->start_stack &&
+			  vma->vm_end > mm->start_stack)) ||
+			((vma->vm_start >=
+			  (STACK_TOP_MAX - PAGE_SIZE +
+			   ((vma->vm_flags & VM_GROWSDOWN)?-PAGE_SIZE:PAGE_SIZE))) &&
+			 (vma->vm_end <= STACK_TOP_MAX))) /* stack */
+		{
+			atomic_add(v, &pp_usage->cur_sp);
+			ATOMIC_SET_MAX(pp_usage->max_sp, pp_usage->cur_sp);
+			page->rmap_owner.p_flags = _stack_seg;
+		}
+		/* heap : (rwxp) && (brk)
+		 */
+		else if((flags & (VM_READ|VM_WRITE|VM_EXEC)) &&
+			(vma->vm_start <= mm->brk && vma->vm_end >= mm->start_brk))
+		{
+			atomic_add(v, &pp_usage->cur_hp);
+			ATOMIC_SET_MAX(pp_usage->max_hp, pp_usage->cur_hp);
+			page->rmap_owner.p_flags = _heap_seg;
+		}
+		else /* mmap : anon && (rw-p) */
+		{
+			atomic_add(v, &pp_usage->cur_mp);
+			ATOMIC_SET_MAX(pp_usage->max_mp, pp_usage->cur_mp);
+			page->rmap_owner.p_flags = _mmap_seg;
+		}
+	}
+	else
+	{
+		fault_vma_t flags;
+		if(page)
+		{
+			flags = page->rmap_owner.p_flags;
+			switch(flags)
+			{
+				case _code_seg : atomic_add(v, &pp_usage->cur_cp); break;
+				case _data_seg : atomic_add(v, &pp_usage->cur_dp); break;
+				case _stack_seg : atomic_add(v, &pp_usage->cur_sp); break;
+				case _heap_seg : atomic_add(v, &pp_usage->cur_hp); break;
+				case _mmap_seg :
+				default :
+					atomic_add(v, &pp_usage->cur_mp);
+			}
+		}
+	}
+
+	/* Total page count */
+	atomic_add(v, &pp_usage->cur_page);
+	ATOMIC_SET_MAX(pp_usage->max_page, pp_usage->cur_page);
+}
+
+/**
+  * \brief  Re/set the trace enable flag for a ‘terminated’ task
+  *         depending whether the task name present in exclusion list.
+  *         Note that the statistics may be already collected but this
+  *         will prevent it from displaying.
+  *
+  * \param  pp_usage
+  */
+
+void set_usage_trace_enable(struct page_usage_struct * pp_usage)
+{
+	int filt_index;
+	if(pp_usage)
+	{
+		filt_index = search_filter(pp_usage->comm);
+		atomic_set(&pp_usage->trace_enable,
+			   ((filt_index & (MAX_FILT - 1)) < s_pos) |
+			   (filt_index & (1 << 31)));
+	}
+}
+
+int do_thread_page_count(struct mm_struct *mm, struct vm_area_struct *vma,
+			 struct page *page, unsigned long addr, int v)
+{
+	struct task_struct * tsk = NULL;
+	pid_t pid = 0, tgid = 0;
+
+	if(unlikely(!vma))
+	{
+		return -EFAULT;
+	}
+
+	if(v > 0) /* Increment */
+	{
+		tsk = current;
+
+		if(unlikely(!tsk->pp_usage))
+			return -EFAULT;
+
+		if(tsk->mm == NULL) /* kernel tasks */
+			return -EFAULT;
+
+		if(page && atomic_read(&tsk->pp_usage->trace_enable))
+		{
+			spin_lock(&(page->rmap_owner.m_lock));
+			if(page->rmap_owner.tsk == NULL)
+			{
+				/* for a non faulting task pid won't  be set at all
+                                 *  If pid is set to zero, then it is assumed that either
+                                 *  the trace is disabled for the task or no page faulting
+                                 *  for the task happened
+                                 */
+				if(tsk->pp_usage->pid == 0) {
+					tsk->pp_usage->pid = tsk->pid;
+					tsk->pp_usage->tgid = tsk->tgid;
+					tsk->pp_usage->tsk = tsk;
+				}
+
+				page->rmap_owner.tsk = tsk;   /* assign the owner */
+				page->rmap_owner.pid = tsk->pid;
+				page->rmap_owner.tgid = tsk->tgid;
+				do_inc_dec_page(page, tsk->pp_usage, mm, vma, addr, v);
+			}
+			spin_unlock(&(page->rmap_owner.m_lock));
+		}
+	}
+	else
+	{
+		if(page)
+		{
+			struct task_struct * proc, *thread;
+			struct page_usage_struct *ppu;
+
+			tsk = page->rmap_owner.tsk;
+			pid = page->rmap_owner.pid;
+			tgid = page->rmap_owner.tgid;
+			spin_lock(&(page->rmap_owner.m_lock));
+			if(tsk && pid)
+			{
+				/* This design checks all the running process in
+				 * the system and then the running threads in the
+				 * process and then matches the pid for getting
+				 * the alive owner of the page fault.
+				 * If it gets then it decrements the page count,
+				 * else it goes to history and decrements there.
+				 * The code is not vulnerable but not a optimized one.
+				 * It will eat up bandwidth on every page removal.
+				 */
+
+				read_lock(&tasklist_lock);
+				for_each_process(proc) /* applicable when the task is alive */
+				{
+					/* checking pid alone could be erroneous */
+					if(proc == tsk && pid == proc->pid) 
+					{
+						if(proc->pp_usage &&
+						   atomic_read(&proc->pp_usage->trace_enable))
+							do_inc_dec_page(page, proc->pp_usage,
+									mm, vma, addr, v); 
+						RESET_RMAP_OWNER(page); /* reset the owner */
+						goto unlock; /* for one page one task will be the owner */
+					}
+					/* running threads */
+					thread = proc;
+					while_each_thread(proc, thread)
+					{
+						if(tsk == thread && pid == thread->pid)
+						{
+							if(thread->pp_usage &&
+							   atomic_read(&thread->pp_usage->trace_enable))
+								do_inc_dec_page(page, thread->pp_usage,
+										mm, vma, addr, v);
+							RESET_RMAP_OWNER(page); /* reset the owner */
+							goto unlock;
+						}
+					}
+					/* terminated threads */
+					if(tgid == proc->pid) /* group_leader */
+					{
+						ppu = proc->pp_usage;
+						if(ppu)
+						{
+							ppu = ppu->next;
+							while(ppu)
+							{
+								/* since pid can be reused once it reaches the limit,
+								 * checking the struct task pointer is necessary
+								 */
+								if(ppu->tsk == tsk && ppu->pid == pid) {
+									if(atomic_read(&ppu->trace_enable))
+										do_inc_dec_page(page, ppu, mm, vma, addr, v);
+									RESET_RMAP_OWNER(page);
+									goto unlock;
+								}
+								ppu = ppu->next;
+							}
+						}
+						else /* if page_usage info is missing the
+						      * task then no way thread usage can be tracked */
+						{
+							RESET_RMAP_OWNER(page);
+							goto unlock;
+						}
+					}
+				}
+unlock:
+				read_unlock(&tasklist_lock);
+			}
+			spin_unlock(&(page->rmap_owner.m_lock));
+		}
+	}
+
+	return 0;
+}
+
+void insert_usage_history(struct page_usage_struct *p)
+{
+	extern struct kmem_cache *page_usage_struct_cachep;
+	struct page_usage_struct *n, *e;
+
+	if(p)
+	{
+		spin_lock(&h_lock);
+		e = hist_rng_buf[writep];
+		hist_rng_buf[writep] = p;
+		writep = ((writep + 1) & (MAX_HIST_BUF_SIZE - 1));
+		spin_unlock(&h_lock);
+
+		if(e)
+		{
+			if(e->pid) /* valid entry */
+			{
+				while(e) /* clear all the threads */
+				{
+					n = e->next;
+					kmem_cache_free(page_usage_struct_cachep, e);
+					e = n;
+				}
+			}
+		}
+	}
+}
+
+/*
+ * \brief  This function will search the history buffer for the group leader entry
+ *
+ * \param  pid
+ *
+ * \return pp_usage of group_leader
+ */
+
+struct page_usage_struct* get_group_leader_entry(pid_t pid)
+{
+	int wp;
+	struct page_usage_struct * group_leader_entry;
+
+	for(wp = 0; wp < writep; wp++)
+	{
+		group_leader_entry = hist_rng_buf[wp];
+		if(group_leader_entry->pid == pid)
+			return group_leader_entry;
+	}
+
+	return NULL;
+}
+
+static int print_page_usage_stat(bool seq_true_or_kernel_false,
+				 struct seq_file *m,
+				 struct page_usage_struct *entry,
+				 char * spl_str)
+{
+	if(seq_true_or_kernel_false)
+	{
+		return seq_printf(m, CONTENT_FORMAT,
+				  spl_str,
+				  entry->tgid,
+				  entry->pid,
+				  entry->comm,
+        			  atomic_read(&entry->cur_cp),
+				  atomic_read(&entry->max_cp),
+				  atomic_read(&entry->cur_dp),
+				  atomic_read(&entry->max_dp),
+				  atomic_read(&entry->cur_sp),
+				  atomic_read(&entry->max_sp),
+				  atomic_read(&entry->cur_hp),
+				  atomic_read(&entry->max_hp),
+				  atomic_read(&entry->cur_mp),
+				  atomic_read(&entry->max_mp),
+				  atomic_read(&entry->cur_page),
+				  atomic_read(&entry->max_page));
+	}
+	else
+	{
+		return printk(KERN_INFO CONTENT_FORMAT,
+			      spl_str, entry->tgid,
+			      entry->pid, entry->comm,
+			      atomic_read(&entry->cur_cp),
+			      atomic_read(&entry->max_cp),
+			      atomic_read(&entry->cur_dp),
+			      atomic_read(&entry->max_dp),
+			      atomic_read(&entry->cur_sp),
+			      atomic_read(&entry->max_sp),
+			      atomic_read(&entry->cur_hp),
+			      atomic_read(&entry->max_hp),
+			      atomic_read(&entry->cur_mp),
+			      atomic_read(&entry->max_mp),
+			      atomic_read(&entry->cur_page),
+			      atomic_read(&entry->max_page));
+	}
+}
+
+static int threads_meminfo_show(struct seq_file *m, void *v)
+{
+	struct task_struct * proc, *thread;
+	struct page_usage_struct *entry, *group_leader_entry;
+
+	seq_printf(m, "%sinformation of per thread memory usage accounting "
+		      "(Version %d.%d):\n", linux_banner, PTMU_MAJOR, PTMU_MINOR);
+	seq_printf(m, TAG_FORMAT);
+	seq_printf(m, TAG_LINE);
+
+	read_lock(&tasklist_lock);
+	for_each_process(proc)
+	{
+		group_leader_entry = entry = proc->pp_usage;
+
+		if(entry)
+		{
+			if(atomic_read(&entry->trace_enable) &&
+			   entry->pid)	  /* Process */
+				print_page_usage_stat(true, m, entry, "P");
+
+			spin_lock(&group_leader_entry->u_lock);  /* to protect the list */
+			entry = entry->next;
+			/* terminated threads */
+			while(entry)
+			{
+				if(atomic_read(&entry->trace_enable) && entry->pid)
+					print_page_usage_stat(true, m, entry, "*T");
+				entry = entry->next;
+			}
+			spin_unlock(&group_leader_entry->u_lock);
+		}
+
+		/* running threads */
+		thread = proc;
+		while_each_thread(proc, thread)
+		{
+			entry = thread->pp_usage;
+			if(atomic_read(&entry->trace_enable) && entry->pid)
+				print_page_usage_stat(true, m, entry, "T");
+		}
+	}
+	read_unlock(&tasklist_lock);
+
+	return 0;
+}
+
+static int threads_histinfo_show(struct seq_file *m, void *v)
+{
+	struct page_usage_struct *child, *group_leader_entry;
+	int wp;
+
+	seq_printf(m, TAG_FORMAT);
+	seq_printf(m, TAG_LINE);
+
+	spin_lock(&h_lock);
+	for(wp = 0; wp < writep; wp++)
+	{
+		group_leader_entry = hist_rng_buf[wp];
+		if(group_leader_entry)
+		{
+			if(atomic_read(&group_leader_entry->trace_enable) &&
+			   group_leader_entry->pid)
+				print_page_usage_stat(true, m, group_leader_entry, "P");
+
+			for(child = group_leader_entry->next; child!=NULL;
+			    child = child->next) /* threads */
+			{
+				if(atomic_read(&child->trace_enable) && child->pid)
+					print_page_usage_stat(true, m, child, "T");
+			}
+		}
+	}
+	spin_unlock(&h_lock);
+
+	return 0;
+}
+
+typedef enum { PTMU_IF_INC = 0, PTMU_IF_EXC, PTMU_IF_MON, PTMU_IF_CON, PTMU_IF_MAX } ptmu_if_TYPE;
+
+char * ptmu_if_path[PTMU_IF_MAX] = {
+	"/proc/ptmu/threads_inclusion",
+	"/proc/ptmu/threads_exclusion",
+	"/proc/ptmu/threads_monitoring",
+	"/proc/ptmu/threads_control"
+};
+
+char * ptmu_if_file[PTMU_IF_MAX] = {
+	"threads_inclusion",
+	"threads_exclusion",
+	"threads_monitoring",
+	"threads_control"
+};
+
+static int thread_inclu_proc_read(struct seq_file *m, void *v)
+{
+	int i;
+	char tmp[MAX_PATH], *procfname;
+	ptmu_if_TYPE ifc;
+	struct  file *file;
+
+	file = (struct file *)m->private;
+
+	procfname = d_path(&file->f_path, tmp, sizeof(tmp));
+
+	for(ifc = PTMU_IF_INC; ifc < PTMU_IF_MAX; ifc++)
+	{
+		if(strncmp(procfname, ptmu_if_path[ifc], strlen(ptmu_if_path[ifc])) == 0)
+			break;
+	}
+
+	spin_lock(&f_lock);
+	for(i = 0; i < s_pos; i++)
+	{
+		if(filt_inclu[i].s_name) {
+			if(PTMU_IF_INC == ifc) /* show the inclusion filter */
+				seq_printf(m, "%s%s\n",
+					   filt_inclu[i].s_name, filt_inclu[i].monitor?"(m)":"");
+			else if(PTMU_IF_MON == ifc)
+			{
+				if(filt_inclu[i].monitor) /* show the monitor filter */
+					seq_printf(m, "%s\n", filt_inclu[i].s_name);
+			}
+		}
+	}
+	spin_unlock(&f_lock);
+
+	return 0;
+}
+
+/**
+  * \brief  Function used in setting the filter.
+  *         The function will iterate all the running process in the system
+  *         and all the active and inactive threads of each process and set their trace
+  *         enable based on the filter.
+  *         In case of reset all the enabled traces should be disabled.
+  *
+  * \param  reset
+  */
+
+static void iterate_task_and_set_trace(bool reset)
+{
+	struct task_struct *proc, *thread;
+
+	read_lock(&tasklist_lock);
+	for_each_process(proc)
+	{
+		struct page_usage_struct *entry, *group_leader_entry;
+		group_leader_entry = proc->pp_usage;
+		if(group_leader_entry)
+		{
+			if(reset)
+			{
+				if(atomic_read(&group_leader_entry->trace_enable))
+					atomic_set(&group_leader_entry->trace_enable, 0);
+			}
+			else
+				set_usage_trace_enable(proc->pp_usage);
+
+			/* terminated threads  */
+			spin_lock(&group_leader_entry->u_lock);  /* to protect the list */
+			entry = group_leader_entry->next;
+			while(entry)
+			{
+				if(reset)
+				{
+					if(atomic_read(&entry->trace_enable))
+						atomic_set(&entry->trace_enable, 0);
+				}
+				else
+					set_usage_trace_enable(entry);
+
+				entry = entry->next;
+			}
+			spin_unlock(&group_leader_entry->u_lock);
+		}
+
+		/* running threads */
+		thread = proc;
+		while_each_thread(proc, thread)
+		{
+			if(thread->pp_usage)
+			{
+				if(reset)
+				{
+					if(atomic_read(&thread->pp_usage->trace_enable))
+						atomic_set(&thread->pp_usage->trace_enable, 0);
+				}
+				else
+					set_usage_trace_enable(thread->pp_usage);
+			}
+		}
+	}
+	read_unlock(&tasklist_lock);
+}
+
+static int thread_usage_monitor(void *arg)
+{
+	struct task_struct *proc, *thread;
+	struct page_usage_struct *entry;
+	bool tag_line;
+
+	while (!kthread_should_stop())
+	{
+		tag_line = false;
+
+		read_lock(&tasklist_lock);
+		for_each_process(proc)
+		{
+			entry = proc->pp_usage;
+			if(entry)
+			{
+				if((atomic_read(&entry->trace_enable) &
+				   (1 << 31)) && entry->pid) /* Process */
+				{
+					if(!tag_line)
+					{
+						printk(KERN_INFO TAG_FORMAT);
+						printk(KERN_INFO TAG_LINE);
+						tag_line = true;
+					}
+					print_page_usage_stat(false, NULL, entry, "P");
+				}
+			}
+			/* running threads */
+			thread = proc;
+			while_each_thread(proc, thread)
+			{
+				entry = thread->pp_usage;
+				if((atomic_read(&entry->trace_enable) &
+				   (1 << 31)) && entry->pid)
+				{
+					if(!tag_line)
+					{
+						printk(KERN_INFO TAG_FORMAT);
+						printk(KERN_INFO TAG_LINE);
+						tag_line = true;
+					}
+					print_page_usage_stat(false, NULL, entry, "T");
+				}
+			}
+		}
+		read_unlock(&tasklist_lock);
+		set_current_state(TASK_INTERRUPTIBLE);
+		schedule_timeout(CONFIG_PTMU_TRACE_MONITOR_INTERVAL * HZ);
+	}
+
+	return 0;
+}
+
+static int thread_inclu_proc_write(struct file *file, const char __user *buffer, size_t count, loff_t *pos)
+{
+	char * token, *str;
+	int i, filt_index = 0;
+	char *kbuffer = NULL;
+	char tmp[MAX_PATH], *procfname;
+	ptmu_if_TYPE ifc;
+
+	if(count == 1) /* null bytes */
+		return count;
+
+	/* Determine the interface type  */
+	procfname = d_path(&file->f_path, tmp, sizeof(tmp));
+
+	for(ifc = PTMU_IF_INC; ifc < PTMU_IF_MAX; ifc++)
+	{
+		if(strncmp(procfname, ptmu_if_path[ifc],
+		   strlen(ptmu_if_path[ifc])) == 0)
+			break;
+	}
+
+	if(ifc == PTMU_IF_MAX) /* none of the interface */
+		return count;
+
+	kbuffer = kmalloc(count, GFP_KERNEL);
+	if(kbuffer == NULL)
+	{
+		printk("***** serious error - could not allocate memory\n");
+		return -EFAULT;
+	}
+	memset(kbuffer, 0, count);
+
+	if(copy_from_user(kbuffer, buffer, count - 1)) /* remove extra 1 byte */
+	{
+		kfree(kbuffer);
+		return -EFAULT;
+	}
+
+	if(ifc == PTMU_IF_CON) /* control interface */
+	{
+		/* A mechanism to clear all the filters */
+		if(strcmp(kbuffer, "reset") == 0) /* `reset` keyword to be used to delete the list */
+		{
+			spin_lock(&f_lock);
+			/* clear the buffer */
+			for(i = 0; i < s_pos; i++)
+			{
+				if(filt_inclu[i].s_name)
+				{
+					kfree(filt_inclu[i].s_name);
+					filt_inclu[i].s_name = NULL;
+					filt_inclu[i].n_sum = 0;
+					filt_inclu[i].monitor = false;
+				}
+			}
+			s_pos = 0;
+			/* disabling all the enabled traces */
+			iterate_task_and_set_trace(true); /* reset = true */
+			spin_unlock(&f_lock);
+			kfree(kbuffer);
+			return count;
+		}
+	}
+
+	for (str = kbuffer; (token = strsep(&str, delim)) != NULL ; )
+	{
+		filt_index = search_filter(token) & (MAX_FILT - 1);
+
+		spin_lock(&f_lock);
+		if(filt_index == s_pos) /* repetition of same filter, New addition */
+		{
+			if(ifc == PTMU_IF_INC || ifc == PTMU_IF_MON)
+			{
+				filt_inclu[s_pos].s_name =
+					kmalloc(TASK_COMM_LEN, GFP_ATOMIC);
+				if(filt_inclu[s_pos].s_name == NULL)
+				{
+					printk("***** serious error"
+					       " - could not allocate memory\n");
+					spin_unlock(&f_lock);
+					break;
+				}
+				memset(filt_inclu[s_pos].s_name, 0, TASK_COMM_LEN);
+				strcpy(filt_inclu[s_pos].s_name, token);
+				filt_inclu[s_pos].n_sum = strsum(token);
+				filt_inclu[s_pos].monitor = (ifc == PTMU_IF_MON);
+				s_pos++;
+			}
+		}
+		else
+		{
+			if(ifc == PTMU_IF_MON)
+				filt_inclu[filt_index].monitor = true;
+
+			if(ifc == PTMU_IF_EXC)
+			{
+				int lidx;
+				kfree(filt_inclu[filt_index].s_name);
+				for(lidx = filt_index; lidx < s_pos; lidx++)
+				{
+					filt_inclu[lidx].s_name = filt_inclu[lidx + 1].s_name;
+					filt_inclu[lidx].n_sum = filt_inclu[lidx + 1].n_sum;
+					filt_inclu[lidx].monitor = filt_inclu[lidx + 1].monitor;
+				}
+				s_pos--;
+			}
+		}
+		spin_unlock(&f_lock);
+	}
+
+	/* Setting the filter after the task is created or renamed */
+	iterate_task_and_set_trace(false); /* reset = false */
+
+	kfree(kbuffer);
+	return count;
+}
+
+static int threads_meminfo_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, threads_meminfo_show, file);
+}
+
+static const struct file_operations threads_meminfo_proc_fops =
+{
+	.open           = threads_meminfo_proc_open,
+	.read           = seq_read,
+	.release        = single_release,
+};
+
+static int threads_histinfo_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, threads_histinfo_show, NULL);
+}
+
+static const struct file_operations threads_histinfo_proc_fops =
+{
+	.open           = threads_histinfo_proc_open,
+	.read           = seq_read,
+	.release        = single_release,
+};
+
+static int thread_inclu_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, thread_inclu_proc_read, file);
+}
+
+static const struct file_operations threads_inclu_proc_fops =
+{
+	.open           = thread_inclu_proc_open,
+	.read           = seq_read,
+	.write          = thread_inclu_proc_write,
+	.release        = single_release,
+};
+
+static struct proc_dir_entry *ptmu_dir = NULL;
+struct task_struct *kmon_tsk = NULL;
+
+static __init int thread_usage_init_fs(void)
+{
+	ptmu_if_TYPE ifc;
+	int err;
+
+	/* create directory */
+	ptmu_dir = proc_mkdir("ptmu", NULL);
+	if(ptmu_dir == NULL) {
+		return -ENOMEM;
+	}
+
+	proc_create("threads_meminfo", 0, ptmu_dir, &threads_meminfo_proc_fops);
+	proc_create("threads_histinfo", 0, ptmu_dir, &threads_histinfo_proc_fops);
+
+	for(ifc = PTMU_IF_INC; ifc < PTMU_IF_MAX; ifc++)
+	{
+		proc_create(ptmu_if_file[ifc], S_IWUSR | S_IRUGO, ptmu_dir, &threads_inclu_proc_fops);
+	}
+	memset(filt_inclu, 0, sizeof(filt_inclu));
+	s_pos = 0;
+
+	kmon_tsk = kthread_create(thread_usage_monitor, NULL, "ptmu_monitor");
+	if(IS_ERR(kmon_tsk))
+	{
+		err = PTR_ERR(kmon_tsk);
+		kmon_tsk = NULL;
+		return err;
+	}
+	kmon_tsk->flags |= PF_NOFREEZE;
+	wake_up_process(kmon_tsk);
+
+	return 0;
+}
+
+static void __exit thread_usage_trace_cleanup(void)
+{
+	int i;
+	ptmu_if_TYPE ifc;
+
+	if(kmon_tsk)
+		kthread_stop(kmon_tsk);
+
+	for(i = 0; i < s_pos; i++)
+	{
+		if(filt_inclu[i].s_name)
+			kfree(filt_inclu[i].s_name);
+	}
+	s_pos = 0;
+
+	if(ptmu_dir)
+	{
+		remove_proc_entry("threads_meminfo", ptmu_dir);
+		remove_proc_entry("threads_histinfo", ptmu_dir);
+		for(ifc = PTMU_IF_INC; ifc < PTMU_IF_MAX; ifc++)
+			remove_proc_entry(ptmu_if_file[ifc], ptmu_dir);
+		remove_proc_entry("ptmu", NULL);
+	}
+}
+
+module_init(thread_usage_init_fs);
+module_exit(thread_usage_trace_cleanup);
+
+EXPORT_SYMBOL(do_thread_page_count);
+EXPORT_SYMBOL(insert_usage_history);
+EXPORT_SYMBOL(set_usage_trace_enable);
+EXPORT_SYMBOL(get_group_leader_entry);
 #endif
 
 #if defined(CONFIG_TRANSPARENT_HUGEPAGE) || defined(CONFIG_HUGETLBFS)

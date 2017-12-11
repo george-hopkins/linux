@@ -61,7 +61,7 @@ static inline long sync_writeback_pages(unsigned long dirtied)
 /*
  * Start background writeback (via writeback threads) at this percentage
  */
-int dirty_background_ratio = 10;
+int dirty_background_ratio = CONFIG_DIRTY_BACKGROUND_RATIO;
 
 /*
  * dirty_background_bytes starts at 0 (disabled) so that it is a function of
@@ -94,7 +94,7 @@ unsigned int dirty_writeback_interval = 5 * 100; /* centiseconds */
 /*
  * The longest time for which data is allowed to remain dirty
  */
-unsigned int dirty_expire_interval = 30 * 100; /* centiseconds */
+unsigned int dirty_expire_interval = CONFIG_DIRTY_EXPIRE_INTERVAL; /* centiseconds */
 
 /*
  * Flag that makes the machine dump writes/reads and block dirtyings.
@@ -593,7 +593,8 @@ static void balance_dirty_pages(struct address_space *mapping,
 	 * background_thresh, to keep the amount of dirty memory low.
 	 */
 	if ((laptop_mode && pages_written) ||
-	    (!laptop_mode && (nr_reclaimable > background_thresh)))
+	    (!laptop_mode && (nr_reclaimable > background_thresh)) ||
+			over_dirty_bground_bytes(bdi))
 		bdi_start_background_writeback(bdi);
 }
 

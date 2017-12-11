@@ -95,6 +95,11 @@
 /* If this is set, the section belongs in the init part of the module */
 #define INIT_OFFSET_MASK (1UL << (BITS_PER_LONG-1))
 
+#ifdef CONFIG_ADVANCE_OPROFILE
+/* Protects module list */
+static DEFINE_SPINLOCK(modlist_lock);
+#endif
+
 /*
  * Mutex protects:
  * 1) List of modules (also safely readable with preempt_disable),
@@ -842,6 +847,9 @@ SYSCALL_DEFINE2(delete_module, const char __user *, name_user,
 	/* Store the name of the last unloaded module for diagnostic purposes */
 	strlcpy(last_unloaded_module, mod->name, sizeof(last_unloaded_module));
 
+#if CONFIG_PRINT_MODULE_ADDR
+	printk(KERN_EMERG"%s mod uld\n", mod->name);
+#endif
 	free_module(mod);
 	return 0;
 out:
@@ -1101,7 +1109,11 @@ static inline int check_modstruct_version(Elf_Shdr *sechdrs,
 static inline int same_magic(const char *amagic, const char *bmagic,
 			     bool has_crcs)
 {
+#ifdef CONFIG_MODULE_VER_CHECK_SKIP
+	return 1;
+#else
 	return strcmp(amagic, bmagic) == 0;
+#endif
 }
 #endif /* CONFIG_MODVERSIONS */
 
@@ -2033,7 +2045,14 @@ static void setup_modinfo(struct module *mod, struct load_info *info)
 
 	for (i = 0; (attr = modinfo_attrs[i]); i++) {
 		if (attr->setup)
-			attr->setup(mod, get_modinfo(info, attr->attr.name));
+		{
+                        if(i!=1){
+				attr->setup(mod, get_modinfo(info, attr->attr.name));
+			}
+			else{
+				attr->setup(mod, get_modinfo(info, "vermagic"));
+			}
+		}
 	}
 }
 
@@ -2731,6 +2750,12 @@ static int post_relocation(struct module *mod, const struct load_info *info)
 	return module_finalize(info->hdr, info->sechdrs, mod);
 }
 
+/* VDLP.4.2.x patch, ultimate coredump check usb modules, 2009-10-07 */
+struct module *ultimate_module_check(const char * name)
+{
+        return find_module(name);
+}
+
 /* Allocate and load the module: note that size of section 0 is always
    zero, and we rely on this for optional sections. */
 static struct module *load_module(void __user *umod,
@@ -2878,6 +2903,7 @@ static void do_mod_ctors(struct module *mod)
 #endif
 }
 
+DEFINE_MUTEX(insmod_mutex);
 /* This is where the real work happens */
 SYSCALL_DEFINE3(init_module, void __user *, umod,
 		unsigned long, len, const char __user *, uargs)
@@ -2889,10 +2915,15 @@ SYSCALL_DEFINE3(init_module, void __user *, umod,
 	if (!capable(CAP_SYS_MODULE) || modules_disabled)
 		return -EPERM;
 
+	mutex_lock(&insmod_mutex);
+
 	/* Do all the hard work */
 	mod = load_module(umod, len, uargs);
 	if (IS_ERR(mod))
+	{
+		mutex_unlock(&insmod_mutex);
 		return PTR_ERR(mod);
+	}
 
 	blocking_notifier_call_chain(&module_notify_list,
 			MODULE_STATE_COMING, mod);
@@ -2923,6 +2954,7 @@ SYSCALL_DEFINE3(init_module, void __user *, umod,
 					     MODULE_STATE_GOING, mod);
 		free_module(mod);
 		wake_up(&module_wq);
+		mutex_unlock(&insmod_mutex);
 		return ret;
 	}
 	if (ret > 0) {
@@ -2942,8 +2974,12 @@ SYSCALL_DEFINE3(init_module, void __user *, umod,
 
 	/* We need to finish all async code before the module init sequence is done */
 	async_synchronize_full();
+	mutex_unlock(&insmod_mutex);
 
 	mutex_lock(&module_mutex);
+#if CONFIG_PRINT_MODULE_ADDR
+	printk(KERN_EMERG"%s mod ld\n", mod->name);
+#endif
 	/* Drop initial reference. */
 	module_put(mod);
 	trim_init_extable(mod);
@@ -3180,6 +3216,21 @@ int module_kallsyms_on_each_symbol(int (*fn)(void *, const char *,
 }
 #endif /* CONFIG_KALLSYMS */
 
+#ifdef CONFIG_RUN_TIMER_DEBUG
+int valid_module_addr(unsigned long addr)
+{
+   struct module *mod;
+
+   list_for_each_entry_rcu(mod, &modules, list) {
+       if(within_module_core(addr, mod))
+           return 1;
+   }
+
+   return 0;
+}
+EXPORT_SYMBOL(valid_module_addr);
+#endif
+
 static char *module_flags(struct module *mod, char *buf)
 {
 	int bx = 0;
@@ -3391,6 +3442,29 @@ struct module *__module_text_address(unsigned long addr)
 }
 EXPORT_SYMBOL_GPL(__module_text_address);
 
+#ifdef CONFIG_ADVANCE_OPROFILE
+/* Check Is this a valid module address? and return module if available */
+struct module *aop_get_module_struct(unsigned long addr)
+{
+	unsigned long flags;
+	struct module *mod;
+
+	spin_lock_irqsave(&modlist_lock, flags);
+
+	list_for_each_entry(mod, &modules, list) {
+		if (within(addr, mod->module_init, mod->init_text_size)
+				|| within(addr, mod->module_core, mod->core_text_size)) {
+			spin_unlock_irqrestore(&modlist_lock, flags);
+			return mod;
+		}
+	}
+
+	spin_unlock_irqrestore(&modlist_lock, flags);
+
+	return NULL;
+}
+#endif /* CONFIG_ADVANCE_OPROFILE */
+
 /* Don't grab lock, we're oopsing. */
 void print_modules(void)
 {
@@ -3398,15 +3472,32 @@ void print_modules(void)
 	char buf[8];
 
 	printk(KERN_DEFAULT "Modules linked in:");
+        printk("\n");
 	/* Most callers should already have preempt disabled, but make sure */
 	preempt_disable();
 	list_for_each_entry_rcu(mod, &modules, list)
+	{
+#ifdef CONFIG_PRINT_MODULE_ADDR
+		printk(" %s%s(0x%p)", mod->name, module_flags(mod, buf), mod->module_core);
+#else
 		printk(" %s%s", mod->name, module_flags(mod, buf));
+#endif
+#ifdef CONFIG_PRINT_MODULE_ADDR
+               if( mod->srcversion != NULL ){
+                       printk(" kernel version : %s\n", mod->srcversion);
+		}
+               else{
+                       printk(" kernel version : NULL\n");
+		}
+#endif
+       }
 	preempt_enable();
 	if (last_unloaded_module[0])
 		printk(" [last unloaded: %s]", last_unloaded_module);
 	printk("\n");
 }
+
+EXPORT_SYMBOL(print_modules);
 
 #ifdef CONFIG_MODVERSIONS
 /* Generate the signature for all relevant module structures here.

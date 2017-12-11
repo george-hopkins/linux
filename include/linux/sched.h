@@ -297,6 +297,16 @@ extern void show_regs(struct pt_regs *);
  */
 extern void show_stack(struct task_struct *task, unsigned long *sp);
 
+#ifdef CONFIG_SHOW_FAULT_TRACE_INFO
+extern void dump_pid_maps(struct task_struct *task);
+extern void show_user_stack(struct task_struct *task, struct pt_regs * regs);
+#ifdef CONFIG_ARM
+extern void show_info(struct task_struct *task, struct pt_regs *regs, unsigned long addr);
+#elif defined(CONFIG_MIPS)
+extern void show_info(struct task_struct *task, struct pt_regs * regs);
+#endif
+#endif
+
 void io_schedule(void);
 long io_schedule_timeout(long timeout);
 
@@ -652,7 +662,21 @@ struct signal_struct {
 	struct mutex cred_guard_mutex;	/* guard against foreign influences on
 					 * credential calculations
 					 * (notably. ptrace) */
+#ifdef CONFIG_SIGNAL_POLICY
+	unsigned int sigact_invoc;	/* number of do_sigaction invocation */
+#endif
 };
+
+struct signal_policy {
+	pid_t		pid;
+	int		signr;
+	unsigned int	max_sigaction;
+	bool		able_to_block;
+};
+
+extern inline int sigpol_add_policy(struct signal_policy *policy);
+extern inline void sigpol_remove_policy(struct signal_policy *policy);
+
 
 /* Context switch must be unlocked if interrupts are to be enabled */
 #ifdef __ARCH_WANT_INTERRUPTS_ON_CTXSW
@@ -1210,6 +1234,34 @@ struct sched_rt_entity {
 
 struct rcu_node;
 
+#ifdef CONFIG_PTMU_TRACE
+struct page_usage_struct {
+	/*! Page counters   */
+	atomic_t cur_cp, max_cp;
+	atomic_t cur_dp, max_dp;
+	atomic_t cur_sp, max_sp;
+	atomic_t cur_hp, max_hp;
+	atomic_t cur_mp, max_mp;
+	// atomic_t cur_shm, max_shm;
+	atomic_t cur_page, max_page;
+
+	atomic_t trace_enable;
+	char comm[TASK_COMM_LEN]; /* for terminated threads */
+	pid_t pid;
+	pid_t tgid; /*!<  for history of terminated process   */
+	struct task_struct * tsk; /* back reference to the task */
+
+	spinlock_t u_lock; /* applicable only for the main thread
+			    * to protect the terminated threads pp_usage list
+			    */
+	struct page_usage_struct *next; /* for next terminated thread */
+} __attribute__((aligned(L1_CACHE_BYTES)));
+
+void insert_usage_history(struct page_usage_struct *p);
+void set_usage_trace_enable(struct page_usage_struct * pp_usage);
+struct page_usage_struct * get_group_leader_entry(pid_t pid);
+#endif
+
 enum perf_event_task_context {
 	perf_invalid_context = -1,
 	perf_hw_context = 0,
@@ -1538,6 +1590,12 @@ struct task_struct {
 	unsigned long default_timer_slack_ns;
 
 	struct list_head	*scm_work_list;
+ 
+        /* VDLinux, based VDLP.Mstar default patch No.5,show fault user stack, 2010-01-29 */
+ #ifdef CONFIG_SHOW_FAULT_TRACE_INFO
+ 	unsigned long user_ssp;  /* user mode start sp */
+ #endif
+ 		
 #ifdef CONFIG_FUNCTION_GRAPH_TRACER
 	/* Index of current stored address in ret_stack */
 	int curr_ret_stack;
@@ -1566,6 +1624,9 @@ struct task_struct {
 		unsigned long nr_pages;	/* uncharged usage */
 		unsigned long memsw_nr_pages; /* uncharged mem+swap usage */
 	} memcg_batch;
+#endif
+#ifdef CONFIG_PTMU_TRACE
+	struct page_usage_struct *pp_usage;
 #endif
 #ifdef CONFIG_HAVE_HW_BREAKPOINT
 	atomic_t ptrace_bp_refcnt;
@@ -1739,6 +1800,10 @@ static inline int is_global_init(struct task_struct *tsk)
 extern int is_container_init(struct task_struct *tsk);
 
 extern struct pid *cad_pid;
+
+#ifdef CONFIG_PTMU_TRACE
+extern void delete_per_thread_trace(struct task_struct *tsk);
+#endif
 
 extern void free_task(struct task_struct *tsk);
 #define get_task_struct(tsk) do { atomic_inc(&(tsk)->usage); } while(0)

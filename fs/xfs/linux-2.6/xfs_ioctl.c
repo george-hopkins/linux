@@ -53,6 +53,15 @@
 #include <linux/slab.h>
 #include <linux/exportfs.h>
 
+#include <linux/fs.h>
+#include <linux/file.h>
+#include <linux/fdtable.h>
+#include <linux/rcupdate.h>
+#include <linux/pid_namespace.h>
+
+#define GET_INODE_FROM_FILP(x) (x->f_path.dentry->d_inode->i_ino)
+#define GET_SUPERDEV_FROM_FILP(x) (x->f_path.dentry->d_inode->i_sb->s_dev)
+
 /*
  * xfs_find_handle maps from userspace xfs_fsop_handlereq structure to
  * a file or fs handle.
@@ -1549,7 +1558,230 @@ xfs_file_ioctl(
 
 		error = xfs_errortag_clearall(mp, 1);
 		return -error;
+#ifdef CONFIG_XFS_FS_TRUNCATE_RANGE     
+        case XFS_IOC_TRUNCATE_RANGE:    
+                {
+                        PVR_INFO        tr;
+                        struct mutex *lock = &inode->i_mutex;
 
+                        if (copy_from_user(&tr, arg, sizeof(PVR_INFO)))
+                                return -XFS_ERROR(EFAULT);
+
+                        if(do_mod(tr.offset,ip->i_mount->m_sb.sb_blocksize)|| do_mod(tr.end,ip->i_mount->m_sb.sb_blocksize))
+                                return -XFS_ERROR(EINVAL);
+
+                        if((tr.offset >= tr.end) || (tr.offset >= inode->i_size))
+                                return -XFS_ERROR(EINVAL);
+
+                        if(atomic_read(&lock->count) == 0){
+                                printk("Truncate Range is already being used...Try Again!!\n");
+                                return -EAGAIN;
+                        }
+
+			/* 
+			 * Make sure to flush the file before doing TRUNCATE
+			 * This will make sure to complete all I/O on the original file
+			 * before truncate range operation
+			 */
+			error = xfs_flush_pages(ip, 0, -1, 0 , FI_NONE);
+			/* wait for all I/O to complete */
+			xfs_ioend_wait(ip); 
+
+                        mutex_lock(&inode->i_mutex);
+                        error = xfs_truncate_range_file(mp, ip, tr.offset, tr.end);
+                        if(!error)
+                        {
+                                struct super_block *sb = NULL;
+				struct writeback_control wbc = {
+					.nr_to_write = LONG_MAX,
+					.sync_mode = WB_SYNC_ALL,
+					.range_start = 0,
+					.range_end = LLONG_MAX,
+				};
+				 /* Since file-> pos keeps tracks of the seek pointer for a file,
+ 				  * so a read might have taken file->pos ahead of the truncate range position.
+				  * After truncate adjust the file->pos so that seek does not return wrong, which
+				  * can result in reading from a wrong position after truncate				  
+				  */
+				if(current->files){
+					struct files_struct *files = current->files;	
+					struct fdtable *fdt = NULL;
+					unsigned int nr_open_fds = 0;
+					spin_lock(&files->file_lock);                                                    
+					fdt = files_fdtable(files); /* pointer to fd array */
+                                        nr_open_fds = fdt->max_fds;                                
+					while(nr_open_fds > 0) {
+						if(fdt->fd[nr_open_fds - 1]){
+							if((GET_INODE_FROM_FILP(filp) == GET_INODE_FROM_FILP(fdt->fd[nr_open_fds - 1])) && 
+							   (GET_SUPERDEV_FROM_FILP(filp) == GET_SUPERDEV_FROM_FILP(fdt->fd[nr_open_fds - 1]))){
+								spin_lock(&fdt->fd[nr_open_fds - 1]->f_lock);
+								if((fdt->fd[nr_open_fds - 1]->f_pos > tr.offset) && (fdt->fd[nr_open_fds - 1]->f_pos <= tr.end)) {
+				                                          fdt->fd[nr_open_fds - 1]->f_pos = tr.offset;
+                                				}else if (fdt->fd[nr_open_fds - 1]->f_pos > tr.end) {
+				                                          fdt->fd[nr_open_fds - 1]->f_pos = fdt->fd[nr_open_fds - 1]->f_pos - (tr.end - tr.offset);
+                                				}															
+								spin_unlock(&fdt->fd[nr_open_fds - 1]->f_lock);
+							}
+						}
+						nr_open_fds--;
+					}
+					spin_unlock(&files->file_lock);
+				}
+
+                                xfs_iflock(ip);
+                                xfs_iflush(ip,SYNC_WAIT); 
+                                sb = inode->i_sb;
+                                /* Updating super block after truncating the file */
+                                if(sb)
+                                {
+                                        inode->i_size = ip->i_d.di_size;
+                                        /* Inode blocks are managed in multiples of sectors, so dividing
+					 * file blockcount with sector size to get the i_blocks
+					 * */
+                                        inode->i_blocks = (ip->i_d.di_nblocks * ip->i_mount->m_sb.sb_blocksize)/512;
+                                        sb->s_op->write_inode(inode,&wbc);
+                                        invalidate_inode_pages2(inode->i_mapping);
+                                }
+                        }
+
+                        mutex_unlock(&inode->i_mutex);
+                        return 0;
+                }
+#endif
+#ifdef CONFIG_XFS_FS_SPLIT
+        case XFS_IOC_SPLIT_FILE:
+                {
+                        PVR_INFO        spt;
+                        struct inode*   split_inode;
+                        struct file     *split_filp;
+                        xfs_inode_t     *split_ip;
+                        xfs_mount_t     *split_mp;
+                        xfs_split_data_t split_data;
+                        struct kstat    stat;
+
+                        struct mutex *lock = &inode->i_mutex;
+
+                        if (copy_from_user(&spt, arg, sizeof(PVR_INFO)))
+                                return -XFS_ERROR(EFAULT);
+
+                        if(do_mod(spt.offset,ip->i_mount->m_sb.sb_blocksize))
+                                return -XFS_ERROR(EINVAL);
+
+                        if(spt.offset >= inode->i_size)
+                                return -XFS_ERROR(EINVAL);
+
+                        if(atomic_read(&lock->count) == 0)
+                        {
+                                printk("Split is already being used...Try Again!!\n");
+                                return -EAGAIN;
+                        }
+
+			/* 
+			 * Make sure to flush the file before doing SPLIT
+			 * This will make sure to complete all I/O on the original file
+			 * before splitting the file
+			 */
+			error = xfs_flush_pages(ip, 0, -1, 0 , FI_NONE);
+			/* wait for all I/O to complete */
+			xfs_ioend_wait(ip); 
+
+                        /* If file exists return error */
+                        if(!vfs_lstat(spt.filename,&stat))
+                                return -XFS_ERROR(EEXIST);
+                        /* open new file where blocks are to be moved */
+                        split_filp = filp_open(spt.filename,O_CREAT | O_SYNC | O_EXCL | O_LARGEFILE, 0666);
+                        if(IS_ERR(split_filp))
+                                return -XFS_ERROR(EEXIST);
+                        else
+                        {
+                                xfs_bmap_free_t flist; // Free list for leaf block extents
+                                /* populate split_data */
+                                split_inode = split_filp->f_dentry->d_inode;
+                                split_ip = XFS_I(split_inode);
+                                split_mp = split_ip->i_mount;
+                                split_data.startoff = spt.offset;
+                                split_data.ip = (xfs_inode_t*)split_ip;
+                                split_data.mp = (xfs_mount_t*)split_mp;
+
+                                /* Initialize free list */
+                                flist.xbf_count = 0;
+                                flist.xbf_low = 0;
+                                split_data.flist = (xfs_bmap_free_t*) &flist;
+
+                                mutex_lock(&inode->i_mutex);
+                                mutex_lock(&split_inode->i_mutex);
+                                /* split file */
+                                error = xfs_split_file(mp, ip,&split_data);
+
+                                if(!error){
+					struct super_block *sb = NULL;
+					struct writeback_control wbc = {
+						.nr_to_write = LONG_MAX,
+						.sync_mode = WB_SYNC_ALL,
+						.range_start = 0,
+						.range_end = LLONG_MAX,
+					};
+					
+					/* Since file-> pos keeps tracks of the seek pointer for a file,
+					 * so a read might have taken file->pos ahead of the split position.
+					 * After split adjust the file->pos so that seek does not return wrong
+					 * position even though I/O will not be allowed
+					 */
+					if(current->files){
+						struct files_struct *files = current->files;
+						struct fdtable *fdt = NULL;
+						unsigned int nr_open_fds = 0;                                
+						spin_lock(&files->file_lock);                                                    
+						fdt = files_fdtable(files); /* pointer to fd array */
+						nr_open_fds = fdt->max_fds; 
+						while(nr_open_fds > 0)
+						{
+							if(fdt->fd[nr_open_fds - 1]){
+			                                	if ((GET_INODE_FROM_FILP(filp) == GET_INODE_FROM_FILP(fdt->fd[nr_open_fds - 1])) && 
+								   (GET_SUPERDEV_FROM_FILP(filp) == GET_SUPERDEV_FROM_FILP(fdt->fd[nr_open_fds - 1]))){
+									if(fdt->fd[nr_open_fds - 1]->f_pos > spt.offset){
+	  								        spin_lock(&fdt->fd[nr_open_fds - 1]->f_lock);
+										fdt->fd[nr_open_fds - 1]->f_pos = spt.offset;
+									        spin_unlock(&fdt->fd[nr_open_fds - 1]->f_lock);
+									}
+								}
+			                                }
+							nr_open_fds--;
+						}
+						spin_unlock(&files->file_lock);
+					}
+
+					sb = inode->i_sb;
+					/* Updating super block with the original file data*/
+					if(sb) {
+						inode->i_size = ip->i_d.di_size;
+						/* Inode blocks are managed in multiples of sectors, so dividing
+						 * file blockcount with sector size to get the i_blocks
+						 */
+						inode->i_blocks = (ip->i_d.di_nblocks * ip->i_mount->m_sb.sb_blocksize)/512;
+						sb->s_op->write_inode(inode,&wbc);
+						invalidate_inode_pages2(inode->i_mapping);
+					}
+					sb = split_inode->i_sb;
+					/* Updating super block with the new file data*/
+					if(sb) {
+						split_inode->i_size = split_ip->i_d.di_size;
+						split_inode->i_blocks = (split_ip->i_d.di_nblocks * ip->i_mount->m_sb.sb_blocksize)/512;
+						sb->s_op->write_inode(split_inode,&wbc);
+						invalidate_inode_pages2(split_inode->i_mapping);
+					}
+
+					filp_close(split_filp,NULL);
+
+					/* Free the leaf blocks if any */
+					error = xfs_free_leafblocks_after_split(mp, ip, &split_data);
+				}
+				mutex_unlock(&split_inode->i_mutex);
+				mutex_unlock(&inode->i_mutex);
+                        }
+                        return 0;
+                }
+#endif
 	default:
 		return -ENOTTY;
 	}

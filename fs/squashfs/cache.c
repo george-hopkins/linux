@@ -57,6 +57,10 @@
 #include "squashfs_fs_sb.h"
 #include "squashfs.h"
 
+#ifdef CONFIG_SQUASHFS_GZIP_LINEAR_MEM
+#include <linux/gzmanager.h>
+#endif
+
 /*
  * Look-up block in cache, and increment usage count.  If not in cache, read
  * and decompress it from disk.
@@ -71,7 +75,18 @@ struct squashfs_cache_entry *squashfs_cache_get(struct super_block *sb,
 
 	while (1) {
 		for (i = 0; i < cache->entries; i++)
+#ifdef CONFIG_SQUASHFS_DEBUGGER
+			/* 
+			   Every read operation on the squashfs is searching squashfs_cache 
+			   If there are cache for request block, 
+			   don't read flash device and just return the squashfs_cache.
+			   Force to read again the block, if there are error.
+			   It makes print squashfs error msg whe you read the block(cache) with error flag.
+			 */	
+			if (cache->entry[i].block == block && cache->entry[i].error >= 0)
+#else
 			if (cache->entry[i].block == block)
+#endif
 				break;
 
 		if (i == cache->entries) {
@@ -115,9 +130,15 @@ struct squashfs_cache_entry *squashfs_cache_get(struct super_block *sb,
 			entry->error = 0;
 			spin_unlock(&cache->lock);
 
+#ifdef CONFIG_GZMANAGER_DECOMPRESS
+			entry->length = squashfs_read_data(sb, entry->data, entry->ibuff,
+				block, length, &entry->next_index,
+				cache->block_size, cache->pages);
+#else
 			entry->length = squashfs_read_data(sb, entry->data,
 				block, length, &entry->next_index,
 				cache->block_size, cache->pages);
+#endif
 
 			spin_lock(&cache->lock);
 
@@ -200,10 +221,15 @@ void squashfs_cache_put(struct squashfs_cache_entry *entry)
 	spin_unlock(&cache->lock);
 }
 
+
 /*
  * Delete cache reclaiming all kmalloced buffers.
  */
+#ifdef CONFIG_SQUASHFS_GZIP_LINEAR_MEM
+void squashfs_cache_delete(struct squashfs_cache *cache, int gz_flag)
+#else
 void squashfs_cache_delete(struct squashfs_cache *cache)
+#endif
 {
 	int i, j;
 
@@ -212,10 +238,38 @@ void squashfs_cache_delete(struct squashfs_cache *cache)
 
 	for (i = 0; i < cache->entries; i++) {
 		if (cache->entry[i].data) {
+#ifdef CONFIG_SQUASHFS_GZIP_LINEAR_MEM
+            if (gz_flag & useGZIP) {
+                if(cache->entry[i].data[0])
+                    kfree(cache->entry[i].data[0]);
+            } else if (gz_flag & useZLIB) {
+#endif
 			for (j = 0; j < cache->pages; j++)
 				kfree(cache->entry[i].data[j]);
+#ifdef CONFIG_SQUASHFS_GZIP_LINEAR_MEM
+            }
+#endif 
 			kfree(cache->entry[i].data);
 		}
+#ifdef CONFIG_GZMANAGER_DECOMPRESS
+#ifdef CONFIG_SQUASHFS_INCL_BIO
+		if (cache->entry[i].ibuff) {
+            free_pages_exact(page_address(cache->entry[i].ibuff[0]), 
+                             (cache->pages + 1) * PAGE_CACHE_SIZE);
+			kfree(cache->entry[i].ibuff);
+	}
+#else
+		if (cache->entry[i].ibuff)
+		{
+			if (gz_flag & useGZIP) {	
+				kfree(cache->entry[i].ibuff);
+			} else if (gz_flag & useZLIB) {
+				vfree(cache->entry[i].ibuff);
+			}
+			
+		}
+#endif
+#endif
 	}
 
 	kfree(cache->entry);
@@ -228,8 +282,13 @@ void squashfs_cache_delete(struct squashfs_cache *cache)
  * size block_size.  To avoid vmalloc fragmentation issues each entry
  * is allocated as a sequence of kmalloced PAGE_CACHE_SIZE buffers.
  */
+#ifdef CONFIG_SQUASHFS_GZIP_LINEAR_MEM
+struct squashfs_cache *squashfs_cache_init(char *name, int entries,
+	int block_size, int gz_flag)
+#else
 struct squashfs_cache *squashfs_cache_init(char *name, int entries,
 	int block_size)
+#endif
 {
 	int i, j;
 	struct squashfs_cache *cache = kzalloc(sizeof(*cache), GFP_KERNEL);
@@ -257,6 +316,9 @@ struct squashfs_cache *squashfs_cache_init(char *name, int entries,
 	init_waitqueue_head(&cache->wait_queue);
 
 	for (i = 0; i < entries; i++) {
+#ifdef CONFIG_SQUASHFS_INCL_BIO
+        char * page_addr;
+#endif
 		struct squashfs_cache_entry *entry = &cache->entry[i];
 
 		init_waitqueue_head(&cache->entry[i].wait_queue);
@@ -268,19 +330,90 @@ struct squashfs_cache *squashfs_cache_init(char *name, int entries,
 			goto cleanup;
 		}
 
+#ifdef CONFIG_GZMANAGER_DECOMPRESS
+#ifdef CONFIG_SQUASHFS_INCL_BIO
+        entry->ibuff = kcalloc((cache->pages + 1), sizeof(void *), GFP_KERNEL);
+        if (entry->ibuff == NULL) {
+            ERROR("Failed to allocate %s cache entry\n", name);
+            goto cleanup;
+        }
+        page_addr = (char *)alloc_pages_exact(((cache->pages + 1) * PAGE_CACHE_SIZE), GFP_KERNEL);
+        if (!page_addr) {
+            ERROR("alloc_pages_exact: Failed to allocate %s buffer\n", name);
+            goto cleanup;
+        }
+        for (j=0;j < (cache->pages+1); j++, page_addr += PAGE_CACHE_SIZE) {
+            entry->ibuff[j] = virt_to_page(page_addr);
+            ClearPageUptodate(entry->ibuff[j]);
+#ifdef SQUASHFS_DEBUG
+            printk("[%s] %s [%d] page[%d] p:%#x v.a: %#x\n",__FUNCTION__, cache->name,i,j,
+                       (unsigned int) entry->ibuff[j], (unsigned int)page_address(entry->ibuff[j])); 
+#endif
+		}
+#else
+		if(gz_flag & useZLIB) {
+			entry->ibuff = vmalloc(block_size + PAGE_CACHE_SIZE);
+                        if(NULL == entry->ibuff){
+                    ERROR("[%s] Error allocating the ibuff \n",__FUNCTION__);
+                                goto cleanup;
+                        }
+		}
+		else if ( gz_flag & useGZIP) {
+			entry->ibuff = kmalloc(block_size + PAGE_CACHE_SIZE,GFP_KERNEL);
+			if(NULL == entry->ibuff){
+	    	    ERROR("[%s] Error allocating the ibuff \n",__FUNCTION__);
+				goto cleanup;
+			}
+		} 
+		memset(entry->ibuff,0,block_size + PAGE_CACHE_SIZE);
+#endif
+#endif
+
+#ifdef CONFIG_SQUASHFS_GZIP_LINEAR_MEM
+        if(gz_flag & useZLIB) {
+            /*ZLIB requires non contiguous pages */
+#endif
 		for (j = 0; j < cache->pages; j++) {
 			entry->data[j] = kmalloc(PAGE_CACHE_SIZE, GFP_KERNEL);
 			if (entry->data[j] == NULL) {
+
+#ifdef CONFIG_SQUASHFS_GZIP_LINEAR_MEM
+                    ERROR("[zlib]Failed to allocate %s buffer\n", name);
+                    goto cleanup;
+                }
+            }
+        } else if ( gz_flag & useGZIP) {
+            /* 
+             * GZIP requires a contiguous pages equal to block 
+             * size as output buffer 
+             */
+            entry->data[0] = kmalloc(PAGE_CACHE_SIZE * cache->pages, GFP_KERNEL);
+            if (entry->data[0] == NULL) {
+                    ERROR("[gzip] Failed to allocate %s output buffer"
+                         " = %ld bytes \n",name, PAGE_CACHE_SIZE * cache->pages);
+                    goto cleanup;
+            }
+            for (j = 1; j < cache->pages; j++) {
+                entry->data[j] = ((char *)(entry->data[0])) +  
+                                                        (j*PAGE_CACHE_SIZE);
+                if (entry->data[j] == NULL) {
+#endif
 				ERROR("Failed to allocate %s buffer\n", name);
 				goto cleanup;
 			}
 		}
 	}
-
+#ifdef CONFIG_SQUASHFS_GZIP_LINEAR_MEM
+    }
+#endif
 	return cache;
 
 cleanup:
+#ifdef CONFIG_SQUASHFS_GZIP_LINEAR_MEM
+	squashfs_cache_delete(cache, gz_flag);
+#else
 	squashfs_cache_delete(cache);
+#endif
 	return NULL;
 }
 
@@ -398,6 +531,12 @@ void *squashfs_read_table(struct super_block *sb, u64 block, int length)
 	int pages = (length + PAGE_CACHE_SIZE - 1) >> PAGE_CACHE_SHIFT;
 	int i, res;
 	void *table, *buffer, **data;
+#ifdef CONFIG_GZMANAGER_DECOMPRESS
+#ifdef CONFIG_SQUASHFS_INCL_BIO
+    char ** idata;
+    char * page_addr, *pa ;
+#endif
+#endif
 
 	table = buffer = kmalloc(length, GFP_KERNEL);
 	if (table == NULL)
@@ -409,13 +548,44 @@ void *squashfs_read_table(struct super_block *sb, u64 block, int length)
 		goto failed;
 	}
 
+#ifdef CONFIG_GZMANAGER_DECOMPRESS
+#ifdef CONFIG_SQUASHFS_INCL_BIO
+
+	idata = kcalloc(pages+1, sizeof(void *), GFP_KERNEL);
+    pa = page_addr=  (char *)alloc_pages_exact(length, GFP_KERNEL);
+	if (idata == NULL || !page_addr)
+		return ERR_PTR(-ENOMEM);
+
+    for (i=0; i<pages+1; i++, page_addr += PAGE_CACHE_SIZE)
+        idata[i] = (void *)virt_to_page(page_addr);
+#endif
+#endif
+
 	for (i = 0; i < pages; i++, buffer += PAGE_CACHE_SIZE)
 		data[i] = buffer;
 
+#ifdef CONFIG_GZMANAGER_DECOMPRESS
+#ifdef CONFIG_SQUASHFS_INCL_BIO
+	res = squashfs_read_data(sb, data, idata, block, length |
+		SQUASHFS_COMPRESSED_BIT_BLOCK, NULL, length, pages);
+#else
+	res = squashfs_read_data(sb, data, NULL, block, length |
+		SQUASHFS_COMPRESSED_BIT_BLOCK, NULL, length, pages);
+#endif
+#else
 	res = squashfs_read_data(sb, data, block, length |
 		SQUASHFS_COMPRESSED_BIT_BLOCK, NULL, length, pages);
+#endif
 
 	kfree(data);
+#ifdef CONFIG_GZMANAGER_DECOMPRESS
+#ifdef CONFIG_SQUASHFS_INCL_BIO
+	if(idata){
+    	free_pages_exact(pa, length);
+		kfree(idata);
+	}
+#endif
+#endif
 
 	if (res < 0)
 		goto failed;

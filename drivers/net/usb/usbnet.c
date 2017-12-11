@@ -150,6 +150,9 @@ int usbnet_get_endpoints(struct usbnet *dev, struct usb_interface *intf)
 		if (tmp < 0)
 			return tmp;
 	}
+#ifdef CONFIG_SAMSUNG_HOST_DUAL_EEM_SUPPORT
+    dev->intf_id = alt->desc.bInterfaceNumber;	/* <Added to support Dual-EEM> setting interface id */	
+#endif
 
 	dev->in = usb_rcvbulkpipe (dev->udev,
 			in->desc.bEndpointAddress & USB_ENDPOINT_NUMBER_MASK);
@@ -346,7 +349,11 @@ static int rx_submit (struct usbnet *dev, struct urb *urb, gfp_t flags)
 		usb_free_urb (urb);
 		return -ENOMEM;
 	}
-	skb_reserve (skb, NET_IP_ALIGN);
+#ifdef CONFIG_SAMSUNG_HOST_DUAL_EEM_SUPPORT
+	  //skb_reserve (skb, NET_IP_ALIGN);	/* <Improves Performance> Fix DMA alignment issues in some OTG */
+#else
+	   skb_reserve (skb, NET_IP_ALIGN);
+#endif
 
 	entry = (struct skb_data *) skb->cb;
 	entry->urb = urb;
@@ -449,6 +456,17 @@ static void rx_complete (struct urb *urb)
 			netif_dbg(dev, rx_err, dev->net,
 				  "rx length %d\n", skb->len);
 		}
+#ifdef CONFIG_SAMSUNG_BOTTOM_HALF_ENHANCMENT
+        	else if(dev->intf_id)
+		{
+		  unsigned long		flags;
+		
+                  spin_lock_irqsave(&dev->rxq.lock, flags);
+		  __skb_unlink(skb, &dev->rxq);
+		  spin_unlock_irqrestore(&dev->rxq.lock, flags);
+		  rx_process(dev, skb);
+		}
+#endif
 		break;
 
 	/* stalls need manual reset. this is rare ... except that
@@ -499,7 +517,14 @@ block:
 		break;
 	}
 
+#ifdef CONFIG_SAMSUNG_BOTTOM_HALF_ENHANCMENT
+       	if(!dev->intf_id)
+	   state = defer_bh(dev, skb, &dev->rxq, state);
+	else if(state == rx_cleanup)
+	   state = defer_bh(dev, skb, &dev->rxq, state);
+#else	
 	state = defer_bh(dev, skb, &dev->rxq, state);
+#endif
 
 	if (urb) {
 		if (netif_running (dev->net) &&
@@ -1389,8 +1414,11 @@ usbnet_probe (struct usb_interface *udev, const struct usb_device_id *prod)
 
 	dev->net = net;
 	strcpy (net->name, "usb%d");
+#ifdef CONFIG_SAMSUNG_HOST_DUAL_EEM_SUPPORT
+	random_ether_addr(net->dev_addr);
+#else
 	memcpy (net->dev_addr, node_id, sizeof node_id);
-
+#endif
 	/* rx and tx sides can use different message sizes;
 	 * bind() should set rx_urb_size in that case.
 	 */

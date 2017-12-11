@@ -448,6 +448,13 @@ int copy_creds(struct task_struct *p, unsigned long clone_flags)
 #endif
 
 	atomic_inc(&new->user->processes);
+
+#ifdef CONFIG_SECURITY_TOMOYO_RESTRICT_PRIVILEGE
+	if(!((clone_flags & CLONE_VM) && !(clone_flags & CLONE_VFORK)))
+	{
+        	security_restrict_creds(p->cred, new);
+	}
+#endif
 	p->cred = p->real_cred = get_cred(new);
 	alter_cred_subscribers(new, 2);
 	validate_creds(new);

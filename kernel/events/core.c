@@ -6731,7 +6731,12 @@ static void sync_child_event(struct perf_event *child_event,
 	 * Release the parent event, if this was the last
 	 * reference to it.
 	 */
+#ifdef CONFIG_CACHE_ANALYZER
+	if (parent_event->filp)
+		fput(parent_event->filp);
+#else
 	fput(parent_event->filp);
+#endif
 }
 
 static void
@@ -6877,7 +6882,12 @@ static void perf_free_event(struct perf_event *event,
 	list_del_init(&event->child_list);
 	mutex_unlock(&parent->child_mutex);
 
+#ifdef CONFIG_CACHE_ANALYZER
+	if (parent->filp)
+		fput(parent->filp);
+#else
 	fput(parent->filp);
+#endif
 
 	perf_group_detach(event);
 	list_del_event(event, ctx);
@@ -6995,13 +7005,28 @@ inherit_event(struct perf_event *parent_event,
 	add_event_to_ctx(child_event, child_ctx);
 	raw_spin_unlock_irqrestore(&child_ctx->lock, flags);
 
+#ifdef CONFIG_CACHE_ANALYZER
+	if (parent_event->attr.inherit_indep) {
+		child_event->owner = child;
+		get_task_struct(child);
+		list_add_tail(
+			&child_event->owner_entry, &child->perf_event_list);
+		return child_event;
+	}
+#endif
+
 	/*
 	 * Get a reference to the parent filp - we will fput it
 	 * when the child event exits. This is safe to do because
 	 * we are in the parent and we know that the filp still
 	 * exists and has a nonzero count:
 	 */
+#ifdef CONFIG_CACHE_ANALYZER
+	if (parent_event->filp)
+		atomic_long_inc(&parent_event->filp->f_count);
+#else
 	atomic_long_inc(&parent_event->filp->f_count);
+#endif
 
 	/*
 	 * Link this into the parent event's child list
@@ -7069,8 +7094,11 @@ inherit_task_group(struct perf_event *event, struct task_struct *parent,
 
 	ret = inherit_group(event, parent, parent_ctx,
 			    child, child_ctx);
-
+#ifdef CONFIG_CACHE_ANALYZER
+	if (ret || event->attr.inherit_indep)
+#else
 	if (ret)
+#endif
 		*inherited_all = 0;
 
 	return ret;

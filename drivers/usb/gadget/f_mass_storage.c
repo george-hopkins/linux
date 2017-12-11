@@ -310,6 +310,14 @@ static const char fsg_string_interface[] = "Mass Storage";
 #define FSG_NO_OTG               1
 #define FSG_NO_INTR_EP           1
 
+#ifdef CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_STORAGE_REMOVABLE
+#include <asm/segment.h>
+#include <asm/uaccess.h>
+#include <linux/buffer_head.h>
+
+#define USB_EVENT_FILE 	"/mtd_rwarea/usb_event"
+#endif	//CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_STORAGE_REMOVABLE
+
 #include "storage_common.c"
 
 
@@ -318,6 +326,9 @@ static const char fsg_string_interface[] = "Mass Storage";
 struct fsg_dev;
 struct fsg_common;
 
+#ifdef CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_STORAGE_MULTI_DEVICE_SUPPORT
+struct msc_gadget;
+#endif
 /* FSF callback functions */
 struct fsg_operations {
 	/*
@@ -391,6 +402,9 @@ struct fsg_common {
 	unsigned int		bad_lun_okay:1;
 	unsigned int		running:1;
 
+#ifdef CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_STORAGE_MULTI_DEVICE_SUPPORT
+	unsigned int		port_valid:1;
+#endif
 	int			thread_wakeup_needed;
 	struct completion	thread_notifier;
 	struct task_struct	*thread_task;
@@ -406,6 +420,11 @@ struct fsg_common {
 	 */
 	char inquiry_string[8 + 16 + 4 + 1];
 
+#ifdef CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_STORAGE_MULTI_DEVICE_SUPPORT
+	unsigned int		port_num;
+	struct device		*parent;
+	struct	device		dev;
+#endif
 	struct kref		ref;
 };
 
@@ -469,6 +488,9 @@ static inline struct fsg_dev *fsg_from_func(struct usb_function *f)
 }
 
 typedef void (*fsg_routine_t)(struct fsg_dev *);
+#ifdef CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_STORAGE_MULTI_DEVICE_SUPPORT
+#include "storage_port.c"
+#endif
 
 static int exception_in_progress(struct fsg_common *common)
 {
@@ -2695,6 +2717,11 @@ static DEVICE_ATTR(ro, 0644, fsg_show_ro, fsg_store_ro);
 static DEVICE_ATTR(nofua, 0644, fsg_show_nofua, fsg_store_nofua);
 static DEVICE_ATTR(file, 0644, fsg_show_file, fsg_store_file);
 
+#ifdef CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_STORAGE_MULTI_DEVICE_SUPPORT
+/* Write permission is checked per PORT in store_*() functions. */
+static DEVICE_ATTR(nluns, 0444, fsg_common_show_nluns, fsg_common_store_nluns);
+static DEVICE_ATTR(files, 0644, fsg_common_show_files, fsg_common_store_files);
+#endif
 
 /****************************** FSG COMMON ******************************/
 
@@ -2705,6 +2732,12 @@ static void fsg_lun_release(struct device *dev)
 	/* Nothing needs to be done */
 }
 
+#ifdef CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_STORAGE_MULTI_DEVICE_SUPPORT
+static void fsg_port_release(struct device *dev)
+{
+	/* Nothing needs to be done */
+}
+#endif
 static inline void fsg_common_get(struct fsg_common *common)
 {
 	kref_get(&common->ref);
@@ -2725,6 +2758,10 @@ static struct fsg_common *fsg_common_init(struct fsg_common *common,
 	struct fsg_lun_config *lcfg;
 	int nluns, i, rc;
 	char *pathbuf;
+#ifdef CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_STORAGE_MULTI_DEVICE_SUPPORT
+	int port_num = -1;
+	void*	parent = NULL;
+#endif	
 
 	/* Find out how many LUNs there should be */
 	nluns = cfg->nluns;
@@ -2732,6 +2769,13 @@ static struct fsg_common *fsg_common_init(struct fsg_common *common,
 		dev_err(&gadget->dev, "invalid number of LUNs: %u\n", nluns);
 		return ERR_PTR(-EINVAL);
 	}
+#ifdef CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_STORAGE_MULTI_DEVICE_SUPPORT
+	/* Take data for supporting multiple ports */
+	if(common) {
+		port_num = common->port_num;
+		parent = (void*) common->parent;
+	}
+#endif
 
 	/* Allocate? */
 	if (!common) {
@@ -2751,6 +2795,17 @@ static struct fsg_common *fsg_common_init(struct fsg_common *common,
 	common->ep0 = gadget->ep0;
 	common->ep0req = cdev->req;
 	common->cdev = cdev;
+#ifdef CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_STORAGE_MULTI_DEVICE_SUPPORT
+	if(port_num >= 0) {
+		common->port_num = port_num;
+		common->parent = (struct device*) parent;
+	}
+	else {
+		printk("\nport number and parent node values are incorrect");
+		rc = -EINVAL;
+		goto error_release;
+	}
+#endif
 
 	/* Maybe allocate device-global string IDs, and patch descriptors */
 	if (fsg_strings[FSG_STRING_INTERFACE].id == 0) {
@@ -2774,6 +2829,38 @@ static struct fsg_common *fsg_common_init(struct fsg_common *common,
 
 	init_rwsem(&common->filesem);
 
+#ifdef CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_STORAGE_MULTI_DEVICE_SUPPORT
+	if(common->parent)
+		common->dev.parent = common->parent;
+	else
+		common->dev.parent = &gadget->dev;
+	common->dev.release = fsg_port_release;
+ 	dev_set_drvdata(&common->dev, &common->filesem);
+	dev_set_name(&common->dev, "port%d",common->port_num);
+	rc = device_register(&common->dev);
+	if (rc) {
+		INFO(common, "failed to register port%d: %d\n", common->port_num, rc);
+		common->nluns = 0;
+		put_device(&common->dev);
+		goto error_release;
+	}
+
+	rc = device_create_file(&common->dev, &dev_attr_nluns);
+	if (rc) {
+		INFO(common, "failed to create device file: nluns: port %d\n", common->port_num);
+		device_unregister(&common->dev);
+		goto error_release;
+	}
+
+	rc = device_create_file(&common->dev, &dev_attr_files);
+	if (rc) {
+		INFO(common, "failed to create device file: files: port %d\n", common->port_num);
+		device_remove_file(&common->dev, &dev_attr_nluns);
+		device_unregister(&common->dev);
+		goto error_release;
+	}
+	common->port_valid = 1;
+#endif
 	for (i = 0, lcfg = cfg->luns; i < nluns; ++i, ++curlun, ++lcfg) {
 		curlun->cdrom = !!lcfg->cdrom;
 		curlun->ro = lcfg->cdrom || lcfg->ro;
@@ -2786,7 +2873,11 @@ static struct fsg_common *fsg_common_init(struct fsg_common *common,
 		dev_set_name(&curlun->dev,
 			     cfg->lun_name_format
 			   ? cfg->lun_name_format
+#ifdef CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_STORAGE_MULTI_DEVICE_SUPPORT
+			   : "port%d-lun%d", common->port_num,
+#else
 			   : "lun%d",
+#endif
 			     i);
 
 		rc = device_register(&curlun->dev);
@@ -2848,13 +2939,24 @@ buffhds_first_it:
 			i = 0x0399;
 		}
 	}
+	
+#ifndef CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_INFO
 	snprintf(common->inquiry_string, sizeof common->inquiry_string,
 		 "%-8s%-16s%04x", cfg->vendor_name ?: "Linux",
 		 /* Assume product name dependent on the first LUN */
 		 cfg->product_name ?: (common->luns->cdrom
 				     ? "File-Stor Gadget"
-				     : "File-CD Gadget"),
+				     : "Storage Gadget"),
 		 i);
+#else
+		 snprintf(common->inquiry_string, sizeof common->inquiry_string,
+		 "%-8s%-16s%04x", cfg->vendor_name ?: "Samsung",
+		 /* Assume product name dependent on the first LUN */
+		 cfg->product_name ?: (common->luns->cdrom
+				     ? "File-Stor Gadget"
+				     : "Evolution Kit"),
+		 i);
+#endif	//CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_INFO
 
 	/*
 	 * Some peripheral controllers are known not to be able to
@@ -2923,6 +3025,15 @@ static void fsg_common_release(struct kref *ref)
 {
 	struct fsg_common *common = container_of(ref, struct fsg_common, ref);
 
+#ifdef CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_STORAGE_MULTI_DEVICE_SUPPORT
+	if(common->port_valid) {
+		device_remove_file(&common->dev, &dev_attr_nluns);
+		device_remove_file(&common->dev, &dev_attr_files);
+
+		device_unregister(&common->dev);
+		common->port_valid = 0;
+	}
+#endif
 	/* If the thread isn't already dead, tell it to exit now */
 	if (common->state != FSG_STATE_TERMINATED) {
 		raise_exception(common, FSG_STATE_EXIT);
@@ -3127,10 +3238,56 @@ struct fsg_module_parameters {
 	_FSG_MODULE_PARAM(prefix, params, stall, bool,			\
 			  "false to prevent bulk stalls")
 
+#ifdef CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_STORAGE_REMOVABLE
+struct file* file_open(const char* path, int flags, int rights) {
+    struct file* filp = NULL;
+    mm_segment_t oldfs;
+    int err = 0;
+
+    oldfs = get_fs();
+    set_fs(get_ds());
+    filp = filp_open(path, flags, rights);
+    set_fs(oldfs);
+    if(IS_ERR(filp)) {
+    	err = PTR_ERR(filp);
+    	return NULL;
+    }
+    return filp;
+}
+
+void file_close(struct file* file) {
+    filp_close(file, NULL);
+}
+
+
+int file_read(struct file* file, unsigned long long offset, unsigned char* data, unsigned int size) 
+{
+    mm_segment_t oldfs;
+    int ret;
+
+    oldfs = get_fs();
+    set_fs(get_ds());
+
+    ret = vfs_read(file, data, size, &offset);
+
+    set_fs(oldfs);
+    return ret;
+}
+
+static unsigned char filename[100];
+#endif	//CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_STORAGE_REMOVABLE
+
 static void
 fsg_config_from_params(struct fsg_config *cfg,
 		       const struct fsg_module_parameters *params)
 {
+	
+#ifdef CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_STORAGE_REMOVABLE
+	struct file		*filp = NULL;
+	struct dentry		*dentry = NULL;
+	struct inode		*inode = NULL;	
+#endif	//CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_STORAGE_REMOVABLE
+	
 	struct fsg_lun_config *lun;
 	unsigned i;
 
@@ -3147,6 +3304,34 @@ fsg_config_from_params(struct fsg_config *cfg,
 			params->file_count > i && params->file[i][0]
 			? params->file[i]
 			: 0;
+
+#ifdef CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_STORAGE_REMOVABLE
+		/* Storage gadget use case 2 solution : support for removable storage 
+  		   media in storage function  in case of multi function gadget */
+		if((i == 0) && (lun->filename == 0) && lun->removable) {
+			/* 1. open the usb_event file */
+   			filp = file_open(USB_EVENT_FILE, O_RDWR, 0);
+                	if (filp == NULL) {
+				printk("\nError: %s file open error\n", USB_EVENT_FILE);
+				continue;
+			}
+			// read the file and display contents
+			//len = file_read(filp, 0, filename, 10); 
+			filename[8] = '\0';
+			
+			if(lun->filename == 0)
+				lun->filename = filename;
+	
+			if (filp->f_path.dentry) {
+				dentry = filp->f_path.dentry;
+		                inode = filp->f_path.dentry->d_inode;	
+			}
+			// close the usb_event file 
+			file_close(filp);
+			if(dentry != NULL)	
+				vfs_unlink(dentry->d_parent->d_inode, dentry);
+		}
+#endif	// CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_STORAGE_REMOVABLE
 	}
 
 	/* Let MSF use defaults */

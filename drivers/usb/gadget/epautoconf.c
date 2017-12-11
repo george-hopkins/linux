@@ -290,6 +290,19 @@ struct usb_ep *usb_ep_autoconfig (
 		if (ep && ep_matches (gadget, ep, desc))
 			return ep;
 #endif
+	} else if (gadget_is_sdp_otg(gadget)) {
+		if (USB_ENDPOINT_XFER_INT == type) {
+			if (USB_DIR_IN & desc->bEndpointAddress)
+				ep = find_ep (gadget, "ep7in");
+			else if (USB_DIR_OUT & desc->bEndpointAddress)
+				ep = find_ep (gadget, "ep8out");
+			else
+				ep = NULL;
+		} else
+			ep = NULL;
+		if (ep && ep_matches (gadget, ep, desc)) {
+			return ep;
+		}
 	}
 
 	/* Second, look at endpoints until an unclaimed one looks usable */

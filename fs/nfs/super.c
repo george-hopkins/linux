@@ -475,7 +475,7 @@ static int nfs_statfs(struct dentry *dentry, struct kstatfs *buf)
 	if (error < 0)
 		goto out_err;
 
-	buf->f_type = NFS_SUPER_MAGIC;
+	buf->f_type = (res.f_type << 16)|NFS_SUPER_MAGIC;
 
 	/*
 	 * Current versions of glibc do not correctly handle the
@@ -506,6 +506,37 @@ static int nfs_statfs(struct dentry *dentry, struct kstatfs *buf)
 	return 0;
 
  out_err:
+	dprintk("%s: statfs error = %d\n", __func__, -error);
+	return error;
+}
+
+/*
+ * Set native fs type in nfs superblock
+ */
+static int nfs_set_nativefs_magic(struct dentry *dentry)
+{
+	struct nfs_server *server = NFS_SB(dentry->d_sb);
+	struct nfs_fh *fh = NFS_FH(dentry->d_inode);
+	struct nfs_fsstat res;
+	int error = -ENOMEM;
+
+	res.fattr = nfs_alloc_fattr();
+	if (res.fattr == NULL)
+		goto out_err;
+
+	error = server->nfs_client->rpc_ops->statfs(server, fh, &res);
+
+	nfs_free_fattr(res.fattr);
+	if (error < 0)
+		goto out_err;
+
+	server->native_fs_magic = res.f_type;
+	printk(KERN_INFO "server->native_fs_magic = 0x%lx\n",
+		server->native_fs_magic);
+
+	return 0;
+
+out_err:
 	dprintk("%s: statfs error = %d\n", __func__, -error);
 	return error;
 }
@@ -1765,6 +1796,8 @@ static int nfs_validate_mount_data(void *options,
 
 	if (data == NULL)
 		goto out_no_data;
+	
+	data->namlen = NFS3_MAXNAMLEN;
 
 	switch (data->version) {
 	case 1:
@@ -2291,6 +2324,9 @@ static struct dentry *nfs_fs_mount(struct file_system_type *fs_type,
 	if (error)
 		goto error_splat_root;
 
+	if (server)
+		nfs_set_nativefs_magic(mntroot);
+
 	s->s_flags |= MS_ACTIVE;
 
 out:
@@ -2330,6 +2366,13 @@ static void nfs_put_super(struct super_block *s)
 static void nfs_kill_super(struct super_block *s)
 {
 	struct nfs_server *server = NFS_SB(s);
+	int err;
+
+	err = server->nfs_client->rpc_ops->umount(server);
+	if (err < 0) {
+		printk(KERN_ERR "%s: nfs_proc3_umount() failed err = %d\n",
+				__func__, err);
+	}
 
 	kill_anon_super(s);
 	nfs_fscache_release_super_cookie(s);

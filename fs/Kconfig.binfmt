@@ -27,6 +27,14 @@ config COMPAT_BINFMT_ELF
 	bool
 	depends on COMPAT && BINFMT_ELF
 
+config BINFMT_ELF_COMP
+    bool "Kernel support for compressed ELF binaries(Ultimate Coredump)"
+    depends on BINFMT_ELF && CRYPTO_DEFLATE
+    default y
+    help
+      Ultimate Coredump compress core file based ELF binary and create gzip file.
+
+
 config BINFMT_ELF_FDPIC
 	bool "Kernel support for FDPIC ELF binaries"
 	default y

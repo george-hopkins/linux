@@ -39,16 +39,20 @@
 
 static inline unsigned long get_gt_port_base(unsigned long reg)
 {
-	unsigned long addr;
-	addr = GT_READ(reg);
-	return (unsigned long) ioremap (((addr & 0xffff) << 21), 0x10000);
+    unsigned long addr;
+    void *pAddr = NULL;
+    addr = GT_READ(reg);
+    pAddr = ioremap (((addr & 0xffff) << 21), 0x10000);
+    return (unsigned long)pAddr;
 }
 
 static inline unsigned long get_msc_port_base(unsigned long reg)
 {
-	unsigned long addr;
-	MSC_READ(reg, addr);
-	return (unsigned long) ioremap(addr, 0x10000);
+    unsigned long addr;
+    void *pAddr = NULL;
+    MSC_READ(reg, addr);
+    pAddr = ioremap(addr, 0x10000);
+    return (unsigned long)pAddr;
 }
 
 /*

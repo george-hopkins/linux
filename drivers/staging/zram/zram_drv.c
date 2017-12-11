@@ -40,7 +40,7 @@ static int zram_major;
 struct zram *devices;
 
 /* Module params (documentation at end) */
-unsigned int num_devices;
+unsigned int num_devices = CONFIG_ZRAMDEVICES;
 
 static void zram_stat_inc(u32 *v)
 {
@@ -198,8 +198,8 @@ static void handle_uncompressed_page(struct zram *zram,
 			zram->table[index].offset;
 
 	memcpy(user_mem, cmem, PAGE_SIZE);
-	kunmap_atomic(user_mem, KM_USER0);
 	kunmap_atomic(cmem, KM_USER1);
+	kunmap_atomic(user_mem, KM_USER0);
 
 	flush_dcache_page(page);
 }
@@ -256,8 +256,8 @@ static void zram_read(struct zram *zram, struct bio *bio)
 			xv_get_object_size(cmem) - sizeof(*zheader),
 			user_mem, &clen);
 
-		kunmap_atomic(user_mem, KM_USER0);
 		kunmap_atomic(cmem, KM_USER1);
+		kunmap_atomic(user_mem, KM_USER0);
 
 		/* Should NEVER happen. Return bio error if it does. */
 		if (unlikely(ret != LZO_E_OK)) {
@@ -355,7 +355,7 @@ static void zram_write(struct zram *zram, struct bio *bio)
 			src = kmap_atomic(page, KM_USER0);
 			goto memstore;
 		}
-
+		
 		if (xv_malloc(zram->mem_pool, clen + sizeof(*zheader),
 				&zram->table[index].page, &offset,
 				GFP_NOIO | __GFP_HIGHMEM)) {
@@ -656,6 +656,7 @@ static void destroy_device(struct zram *zram)
 static int __init zram_init(void)
 {
 	int ret, dev_id;
+	struct zram *rzs;
 
 	if (num_devices > max_num_devices) {
 		pr_warning("Invalid value for num_devices: %u\n",
@@ -689,6 +690,13 @@ static int __init zram_init(void)
 		if (ret)
 			goto free_devices;
 	}
+       for (dev_id = 0; dev_id < num_devices; dev_id++) {
+               rzs = &devices[dev_id];
+               rzs->disksize = CONFIG_DISKDEVICES << 10;
+		ret = zram_init_device(rzs);
+		if (ret)
+			goto free_devices;
+       }
 
 	return 0;
 
@@ -700,6 +708,37 @@ unregister:
 	unregister_blkdev(zram_major, "zram");
 out:
 	return ret;
+}
+
+int show_zram_info(void);
+int show_zram_info(void)
+{
+	size_t dev_id, cur_dev_id = 0;	/* curent used dev_id is 0 */
+	size_t mem_used = 0;
+	struct zram *rzs = NULL;
+	struct zram_stats *stats = NULL;
+
+	if (devices == NULL) {
+		printk(KERN_NOTICE"zram driver has never been initialized (devices == NULL)\n");
+		return -EINVAL;
+	}
+
+	printk(KERN_NOTICE"VDLinux msg, zram info:\n");
+	for (dev_id=0; dev_id <= cur_dev_id; dev_id++) {
+		rzs = &devices[cur_dev_id];
+
+		if (rzs->init_done) {
+			stats = &rzs->stats;
+			mem_used = xv_get_total_size_bytes(rzs->mem_pool)
+				+ (stats->pages_expand << PAGE_SHIFT);
+
+			printk(KERN_NOTICE"zram%u: OrigDataSize %u kB ComprDataSize %llu kB MemUsedTotal %u kB\n",
+				dev_id, (stats->pages_stored << PAGE_SHIFT) >> 10, stats->compr_size >> 10, mem_used >> 10);
+		} else
+			printk(KERN_NOTICE"zram%u: not initialized\n", dev_id);
+	}
+
+	return 0;
 }
 
 static void __exit zram_exit(void)

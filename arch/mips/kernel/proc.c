@@ -16,6 +16,28 @@
 
 unsigned int vced_count, vcei_count;
 
+#ifdef CONFIG_BOOTPROFILE
+static char cpu_name_buf[64];
+#endif /* CONFIG_BOOTPROFILE */
+
+#ifdef CONFIG_BOOTPROFILE
+/* pass to boot chart solution */
+const char *bc_get_cpu_name(void)
+{
+	 int n = 0;
+	 unsigned int version = cpu_data[n].processor_id;
+	 unsigned int fp_vers = cpu_data[n].fpu_id;
+
+	 snprintf(cpu_name_buf, sizeof(cpu_name_buf),
+	 "%s version%d.%d fp_vers:%d.%d- %s", __cpu_name[n],
+	 (version >> 4) & 0x0f, version & 0x0f,
+	 (fp_vers >> 4) & 0x0f, fp_vers & 0x0f,
+	 get_system_type());
+
+	 return cpu_name_buf;
+}
+#endif /* CONFIG_BOOTPROFILE */
+
 static int show_cpuinfo(struct seq_file *m, void *v)
 {
 	unsigned long n = (unsigned long) v - 1;

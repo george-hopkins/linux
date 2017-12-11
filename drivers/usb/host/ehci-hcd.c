@@ -89,7 +89,13 @@ static const char	hcd_name [] = "ehci_hcd";
  * code).  In an attempt to avoid trouble, we will use a minimum scheduling
  * length of 512 frames instead of 256.
  */
+
+//hongyabi patch for enlarge async frame list length
+#ifdef SAMSUNG_PATCH_WITH_USB_ENHANCEMENT
+#define 	EHCI_TUNE_FLS  	0 	/* 1024 frame schedule */
+#else
 #define	EHCI_TUNE_FLS		1	/* (medium) 512-frame schedule */
+#endif
 
 #define EHCI_IAA_MSECS		10		/* arbitrary */
 #define EHCI_IO_JIFFIES		(HZ/10)		/* io watchdog > irq_thresh */
@@ -108,7 +114,11 @@ module_param (park, uint, S_IRUGO);
 MODULE_PARM_DESC (park, "park setting; 1-3 back-to-back async packets");
 
 /* for flakey hardware, ignore overcurrent indicators */
+#ifdef CONFIG_NVT_NT72568
+static int ignore_oc = 1;
+#else
 static int ignore_oc = 0;
+#endif
 module_param (ignore_oc, bool, S_IRUGO);
 MODULE_PARM_DESC (ignore_oc, "ignore bogus hardware overcurrent indications");
 
@@ -197,6 +207,7 @@ static int handshake (struct ehci_hcd *ehci, void __iomem *ptr,
 	return -ETIMEDOUT;
 }
 
+#ifndef CONFIG_NVT_NT72568
 /* check TDI/ARC silicon is in host mode */
 static int tdi_in_host_mode (struct ehci_hcd *ehci)
 {
@@ -207,6 +218,7 @@ static int tdi_in_host_mode (struct ehci_hcd *ehci)
 	tmp = ehci_readl(ehci, reg_ptr);
 	return (tmp & 3) == USBMODE_CM_HC;
 }
+#endif
 
 /* force HC to halt state from unknown (EHCI spec section 2.3) */
 static int ehci_halt (struct ehci_hcd *ehci)
@@ -215,11 +227,11 @@ static int ehci_halt (struct ehci_hcd *ehci)
 
 	/* disable any irqs left enabled by previous code */
 	ehci_writel(ehci, 0, &ehci->regs->intr_enable);
-
+#ifndef CONFIG_NVT_NT72568
 	if (ehci_is_TDI(ehci) && tdi_in_host_mode(ehci) == 0) {
 		return 0;
 	}
-
+#endif
 	if ((temp & STS_HALT) != 0)
 		return 0;
 
@@ -428,11 +440,13 @@ static void ehci_silence_controller(struct ehci_hcd *ehci)
 	ehci_halt(ehci);
 	ehci_turn_off_all_ports(ehci);
 
+#ifndef CONFIG_NVT_NT72568
 	/* make BIOS/etc use companion controller during reboot */
 	ehci_writel(ehci, 0, &ehci->regs->configured_flag);
 
 	/* unblock posted writes */
 	ehci_readl(ehci, &ehci->regs->configured_flag);
+#endif
 }
 
 /* ehci_shutdown kick in for silicon on any bus (not just pci, etc).
@@ -451,6 +465,7 @@ static void ehci_shutdown(struct usb_hcd *hcd)
 	spin_unlock_irq(&ehci->lock);
 }
 
+#ifndef CONFIG_NVT_NT72568
 static void ehci_port_power (struct ehci_hcd *ehci, int is_on)
 {
 	unsigned port;
@@ -468,7 +483,7 @@ static void ehci_port_power (struct ehci_hcd *ehci, int is_on)
 	ehci_readl(ehci, &ehci->regs->command);
 	msleep(20);
 }
-
+#endif
 /*-------------------------------------------------------------------------*/
 
 /*
@@ -532,8 +547,10 @@ static void ehci_stop (struct usb_hcd *hcd)
 	spin_unlock_irq (&ehci->lock);
 	ehci_mem_cleanup (ehci);
 
+#ifndef CONFIG_NVT_NT72568
 	if (ehci->amd_pll_fix == 1)
 		usb_amd_dev_put();
+#endif
 
 #ifdef	EHCI_STATS
 	ehci_dbg (ehci, "irq normal %ld err %ld reclaim %ld (lost %ld)\n",
@@ -547,6 +564,7 @@ static void ehci_stop (struct usb_hcd *hcd)
 		    ehci_readl(ehci, &ehci->regs->status));
 }
 
+#ifndef CONFIG_NVT_NT72568
 /* one-time init, only for memory state */
 static int ehci_init(struct usb_hcd *hcd)
 {
@@ -665,6 +683,7 @@ static int ehci_init(struct usb_hcd *hcd)
 		hcd->self.sg_tablesize = ~0;
 	return 0;
 }
+#endif
 
 /* start HC running; it's halted, ehci_init() has been run (once) */
 static int ehci_run (struct usb_hcd *hcd)
@@ -735,7 +754,9 @@ static int ehci_run (struct usb_hcd *hcd)
 	 */
 	down_write(&ehci_cf_port_reset_rwsem);
 	hcd->state = HC_STATE_RUNNING;
+#ifndef CONFIG_NVT_NT72568
 	ehci_writel(ehci, FLAG_CF, &ehci->regs->configured_flag);
+#endif
 	ehci_readl(ehci, &ehci->regs->command);	/* unblock posted writes */
 	msleep(5);
 	up_write(&ehci_cf_port_reset_rwsem);
@@ -750,7 +771,6 @@ static int ehci_run (struct usb_hcd *hcd)
 
 	ehci_writel(ehci, INTR_MASK,
 		    &ehci->regs->intr_enable); /* Turn On Interrupts */
-
 	/* GRR this is run-once init(), being done every time the HC starts.
 	 * So long as they're part of class devices, we can't do it init()
 	 * since the class device isn't created that early.
@@ -761,6 +781,7 @@ static int ehci_run (struct usb_hcd *hcd)
 	return 0;
 }
 
+#ifndef CONFIG_NVT_NT72568
 static int __maybe_unused ehci_setup (struct usb_hcd *hcd)
 {
 	struct ehci_hcd *ehci = hcd_to_ehci(hcd);
@@ -789,7 +810,7 @@ static int __maybe_unused ehci_setup (struct usb_hcd *hcd)
 
 	return 0;
 }
-
+#endif
 /*-------------------------------------------------------------------------*/
 
 static irqreturn_t ehci_irq (struct usb_hcd *hcd)
@@ -863,7 +884,7 @@ static irqreturn_t ehci_irq (struct usb_hcd *hcd)
 
 		/* kick root hub later */
 		pcd_status = status;
-
+#ifndef CONFIG_NVT_NT72568
 		/* resume root hub? */
 		if (hcd->state == HC_STATE_SUSPENDED)
 			usb_hcd_resume_root_hub(hcd);
@@ -871,6 +892,27 @@ static irqreturn_t ehci_irq (struct usb_hcd *hcd)
 		/* get per-port change detect bits */
 		if (ehci->has_ppcd)
 			ppcd = status >> 16;
+#else
+		/* resume root hub? */
+		if (!(cmd & CMD_RUN) || test_bit(1,&hcd->porcd2))
+		{
+			u32 port_status = readl (&ehci->regs->port_status[0]);
+			usb_hcd_resume_root_hub(hcd);
+			/* get per-port change detect bits */
+			if (ehci->has_ppcd)
+				ppcd = status >> 16;
+			set_bit(1, &hcd->porcd2);
+			if( (port_status & PORT_CONNECT) !=0){
+				writel (cmd | CMD_RUN, &ehci->regs->command);
+				clear_bit(1, &hcd->porcd2);
+			} else {
+				hcd->driver->port_nc(hcd);
+			}
+			set_bit(HCD_FLAG_NRY, &hcd->flags);
+			bh = 1;
+		}
+
+#endif
 
 		while (i--) {
 			int pstatus;
@@ -909,7 +951,9 @@ static irqreturn_t ehci_irq (struct usb_hcd *hcd)
 		ehci_halt(ehci);
 dead:
 		ehci_reset(ehci);
+#ifndef CONFIG_NVT_NT72568
 		ehci_writel(ehci, 0, &ehci->regs->configured_flag);
+#endif
 		usb_hc_died(hcd);
 		/* generic layer kills/unlinks all urbs, then
 		 * uses ehci_stop to clean up the rest
@@ -919,6 +963,12 @@ dead:
 
 	if (bh)
 		ehci_work (ehci);
+
+#ifdef CONFIG_NVT_NT72568
+	if (unlikely(test_bit(1,&hcd->porcd2))) 
+		clear_bit(1, &hcd->porcd2);
+#endif
+
 	spin_unlock (&ehci->lock);
 	if (pcd_status)
 		usb_hcd_poll_rh_status(hcd);
@@ -1207,6 +1257,12 @@ MODULE_LICENSE ("GPL");
 #define	PCI_DRIVER		ehci_pci_driver
 #endif
 
+#if defined(CONFIG_ARCH_CCEP)
+#include "ehci-sdp.c"
+#define	PLATFORM_DRIVER		ehci_sdp_driver
+#endif
+
+
 #ifdef CONFIG_USB_EHCI_FSL
 #include "ehci-fsl.c"
 #define	PLATFORM_DRIVER		ehci_fsl_driver
@@ -1245,6 +1301,13 @@ MODULE_LICENSE ("GPL");
 #ifdef CONFIG_XPS_USB_HCD_XILINX
 #include "ehci-xilinx-of.c"
 #define XILINX_OF_PLATFORM_DRIVER	ehci_hcd_xilinx_of_driver
+#endif
+
+#ifdef CONFIG_USB_NT72568_HCD
+#include "ehci-NT72568.c"
+#define PLATFORM_DRIVER         ehci_hcd_NT72568_driver
+#include "ehci-NT725681.c"
+#define PLATFORM_DRIVER_NT72568         ehci_hcd_NT725681_driver
 #endif
 
 #ifdef CONFIG_PLAT_ORION
@@ -1354,6 +1417,12 @@ static int __init ehci_hcd_init(void)
 	retval = platform_driver_register(&PLATFORM_DRIVER);
 	if (retval < 0)
 		goto clean0;
+
+#ifdef CONFIG_NVT_NT72568
+	retval = platform_driver_register(&PLATFORM_DRIVER_NT72568);
+	if (retval < 0)
+		goto clean0;
+#endif
 #endif
 
 #ifdef PCI_DRIVER
@@ -1400,6 +1469,9 @@ clean1:
 #ifdef PLATFORM_DRIVER
 	platform_driver_unregister(&PLATFORM_DRIVER);
 clean0:
+#ifdef CONFIG_NVT_NT72568
+	platform_driver_unregister(&PLATFORM_DRIVER_NT72568);
+#endif
 #endif
 #ifdef DEBUG
 	debugfs_remove(ehci_debug_root);
@@ -1421,6 +1493,9 @@ static void __exit ehci_hcd_cleanup(void)
 #endif
 #ifdef PLATFORM_DRIVER
 	platform_driver_unregister(&PLATFORM_DRIVER);
+#ifdef CONFIG_NVT_NT72568
+	platform_driver_unregister(&PLATFORM_DRIVER_NT72568);
+#endif
 #endif
 #ifdef PCI_DRIVER
 	pci_unregister_driver(&PCI_DRIVER);

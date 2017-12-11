@@ -346,8 +346,13 @@ ssize_t do_sync_write(struct file *filp, const char __user *buf, size_t len, lof
 
 	for (;;) {
 		ret = filp->f_op->aio_write(&kiocb, &iov, 1, kiocb.ki_pos);
-		if (ret != -EIOCBRETRY)
+		if (ret != -EIOCBRETRY) {
+			/* Check for the Bad sector Error flag */
+			if (test_and_clear_bit(AS_EBAD, &filp->f_mapping->flags)
+								&& ret == -EIO)
+				ret = -EBADSEC;
 			break;
+		}
 		wait_on_retry_sync_kiocb(&kiocb);
 	}
 

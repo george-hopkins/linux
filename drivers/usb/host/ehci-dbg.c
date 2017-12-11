@@ -39,6 +39,7 @@
  * (host controller _Structural_ parameters)
  * see EHCI spec, Table 2-4 for each value
  */
+#ifndef CONFIG_NVT_NT72568
 static void dbg_hcs_params (struct ehci_hcd *ehci, char *label)
 {
 	u32	params = ehci_readl(ehci, &ehci->caps->hcs_params);
@@ -71,6 +72,7 @@ static void dbg_hcs_params (struct ehci_hcd *ehci, char *label)
 				label, buf);
 	}
 }
+ #endif
 #else
 
 static inline void dbg_hcs_params (struct ehci_hcd *ehci, char *label) {}
@@ -83,6 +85,7 @@ static inline void dbg_hcs_params (struct ehci_hcd *ehci, char *label) {}
  * (host controller _Capability_ parameters)
  * see EHCI Spec, Table 2-5 for each value
  * */
+#ifndef CONFIG_NVT_NT72568
 static void dbg_hcc_params (struct ehci_hcd *ehci, char *label)
 {
 	u32	params = ehci_readl(ehci, &ehci->caps->hcc_params);
@@ -110,6 +113,7 @@ static void dbg_hcc_params (struct ehci_hcd *ehci, char *label)
 				" 32 peridic list" : "");
 	}
 }
+#endif
 #else
 
 static inline void dbg_hcc_params (struct ehci_hcd *ehci, char *label) {}

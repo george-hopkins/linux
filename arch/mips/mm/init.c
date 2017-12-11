@@ -43,6 +43,10 @@
 #include <asm/tlb.h>
 #include <asm/fixmap.h>
 
+#ifdef CONFIG_MSTAR_CHIP
+#define LAST_PKMAP 1024
+#define PKMAP_ADDR(nr)  (PKMAP_BASE + ((nr) << PAGE_SHIFT))
+#endif
 /* Atomicity and interruptability */
 #ifdef CONFIG_MIPS_MT_SMTC
 
@@ -127,7 +131,11 @@ void *kmap_coherent(struct page *page, unsigned long addr)
 	pte_t pte;
 	int tlbidx;
 
+#ifdef CONFIG_MSTAR_CHIP
+	BUG_ON((PKMAP_ADDR(0)>addr||PKMAP_ADDR(LAST_PKMAP-1)<addr) && Page_dcache_dirty(page));
+#else
 	BUG_ON(Page_dcache_dirty(page));
+#endif
 
 	inc_preempt_count();
 	idx = (addr >> PAGE_SHIFT) & (FIX_N_COLOURS - 1);
@@ -259,6 +267,7 @@ void copy_from_user_page(struct vm_area_struct *vma,
 			SetPageDcacheDirty(page);
 	}
 }
+EXPORT_SYMBOL(copy_from_user_page);
 
 void __init fixrange_init(unsigned long start, unsigned long end,
 	pgd_t *pgd_base)
@@ -369,6 +378,15 @@ void __init mem_init(void)
 #error "CONFIG_HIGHMEM and CONFIG_DISCONTIGMEM dont work together yet"
 #endif
 	max_mapnr = highend_pfn;
+#if defined(CONFIG_NVT_CHIP) || defined(CONFIG_MSTAR_CHIP)
+	/*
+	 * if highmem region is not added, highend_pfn would be zero.
+	 * then the max_mapnr is also zero, it will make sanity check failed
+	 * if CONFIG_DEBUG_VM is enabled
+	 */
+	if (max_mapnr < max_low_pfn)
+		max_mapnr = max_low_pfn;
+#endif
 #else
 	max_mapnr = max_low_pfn;
 #endif
@@ -390,6 +408,12 @@ void __init mem_init(void)
 	for (tmp = highstart_pfn; tmp < highend_pfn; tmp++) {
 		struct page *page = pfn_to_page(tmp);
 
+#if defined(CONFIG_NVT_CHIP) || defined(CONFIG_MSTAR_CHIP)
+		if (!pfn_valid(tmp))
+        {
+			continue;
+        }
+#endif
 		if (!page_is_ram(tmp)) {
 			SetPageReserved(page);
 			continue;

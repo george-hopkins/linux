@@ -643,7 +643,7 @@ int is_mem_section_removable(unsigned long start_pfn, unsigned long nr_pages)
 	/* All pageblocks in the memory block are likely to be hot-removable */
 	return 1;
 }
-
+#ifndef CONFIG_CMA
 /*
  * Confirm all pages in a range [start, end) is belongs to the same zone.
  */
@@ -754,6 +754,7 @@ do_migrate_range(unsigned long start_pfn, unsigned long end_pfn)
 out:
 	return ret;
 }
+#endif
 
 /*
  * remove from free_area[] and mark all as Reserved.

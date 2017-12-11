@@ -872,6 +872,7 @@ static int unuse_pte(struct vm_area_struct *vma, pmd_t *pmd,
 	set_pte_at(vma->vm_mm, addr, pte,
 		   pte_mkold(mk_pte(page, vma->vm_page_prot)));
 	page_add_anon_rmap(page, vma, addr);
+	inc_ptmu_counter(vma->vm_mm, vma, page, addr, 1);
 	mem_cgroup_commit_charge_swapin(page, ptr);
 	swap_free(entry);
 	/*

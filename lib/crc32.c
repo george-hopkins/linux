@@ -148,6 +148,34 @@ u32 __pure crc32_le(u32 crc, unsigned char const *p, size_t len)
 }
 #endif
 
+/* VDLinux, based VDLP (Mstar) default patch No.10, 
+   ultimate coredump v0.3, SP Team 2009-06-08 */
+unsigned long __pure gzip_crc32_le(unsigned char const *p, unsigned long len);
+
+unsigned long __pure gzip_crc32_le(unsigned char const *p, unsigned long len)
+{
+       const u32 *tab = (const u32 *)crc32table_le;
+       register unsigned long c;              /* temporary variable */
+       static unsigned long crc = (unsigned long)0xffffffffL;     /* shift register contents */
+       register unsigned long d;                   /* temporary variable */
+
+#if CRC_LE_BITS == 8
+       if (p == NULL) {
+               c = 0xffffffffL;
+       } else {
+               c = crc;
+               if (len) do {
+                       d = ((int)c ^ (*p++)) & 0xff;
+                       c = le32_to_cpu(tab[d]) ^ (c >> 8);
+               } while (--len);
+       }
+       crc = c;
+#else
+       printk(KERN_ALERT " ##### CRC_LE_BITS is not set 8, occurred crc check error : %s, %d\n", __func__, __LINE__);
+#endif
+       return c ^ 0xffffffffL;            /* (instead of ~c for 64-bit machines) */
+}
+
 /**
  * crc32_be() - Calculate bitwise big-endian Ethernet AUTODIN II CRC32
  * @crc: seed value for computation.  ~0 for Ethernet, sometimes 0 for

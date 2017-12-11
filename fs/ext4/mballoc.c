@@ -779,7 +779,7 @@ static int ext4_mb_init_cache(struct page *page, char *incore)
 	int groups_per_page;
 	int err = 0;
 	int i;
-	ext4_group_t first_group;
+	ext4_group_t first_group, group;
 	int first_block;
 	struct super_block *sb;
 	struct buffer_head *bhs;
@@ -803,24 +803,23 @@ static int ext4_mb_init_cache(struct page *page, char *incore)
 
 	/* allocate buffer_heads to read bitmaps */
 	if (groups_per_page > 1) {
-		err = -ENOMEM;
 		i = sizeof(struct buffer_head *) * groups_per_page;
 		bh = kzalloc(i, GFP_NOFS);
-		if (bh == NULL)
+		if (bh == NULL) {
+			err = -ENOMEM;
 			goto out;
+		}
 	} else
 		bh = &bhs;
 
 	first_group = page->index * blocks_per_page / 2;
 
 	/* read all groups the page covers into the cache */
-	for (i = 0; i < groups_per_page; i++) {
-		struct ext4_group_desc *desc;
-
-		if (first_group + i >= ngroups)
+	for (i = 0, group = first_group; i < groups_per_page; i++, group++) {
+		if (group >= ngroups)
 			break;
 
-		grinfo = ext4_get_group_info(sb, first_group + i);
+		grinfo = ext4_get_group_info(sb, group);
 		/*
 		 * If page is uptodate then we came here after online resize
 		 * which added some new uninitialized group info structs, so
@@ -831,69 +830,21 @@ static int ext4_mb_init_cache(struct page *page, char *incore)
 			bh[i] = NULL;
 			continue;
 		}
-
-		err = -EIO;
-		desc = ext4_get_group_desc(sb, first_group + i, NULL);
-		if (desc == NULL)
+		if (!(bh[i] = ext4_read_block_bitmap_nowait(sb, group))) {
+			err = -ENOMEM;
 			goto out;
-
-		err = -ENOMEM;
-		bh[i] = sb_getblk(sb, ext4_block_bitmap(sb, desc));
-		if (bh[i] == NULL)
-			goto out;
-
-		if (bitmap_uptodate(bh[i]))
-			continue;
-
-		lock_buffer(bh[i]);
-		if (bitmap_uptodate(bh[i])) {
-			unlock_buffer(bh[i]);
-			continue;
 		}
-		ext4_lock_group(sb, first_group + i);
-		if (desc->bg_flags & cpu_to_le16(EXT4_BG_BLOCK_UNINIT)) {
-			ext4_init_block_bitmap(sb, bh[i],
-						first_group + i, desc);
-			set_bitmap_uptodate(bh[i]);
-			set_buffer_uptodate(bh[i]);
-			ext4_unlock_group(sb, first_group + i);
-			unlock_buffer(bh[i]);
-			continue;
-		}
-		ext4_unlock_group(sb, first_group + i);
-		if (buffer_uptodate(bh[i])) {
-			/*
-			 * if not uninit if bh is uptodate,
-			 * bitmap is also uptodate
-			 */
-			set_bitmap_uptodate(bh[i]);
-			unlock_buffer(bh[i]);
-			continue;
-		}
-		get_bh(bh[i]);
-		/*
-		 * submit the buffer_head for read. We can
-		 * safely mark the bitmap as uptodate now.
-		 * We do it here so the bitmap uptodate bit
-		 * get set with buffer lock held.
-		 */
-		set_bitmap_uptodate(bh[i]);
-		bh[i]->b_end_io = end_buffer_read_sync;
-		submit_bh(READ, bh[i]);
-		mb_debug(1, "read bitmap for group %u\n", first_group + i);
+		mb_debug(1, "read bitmap for group %u\n", group);
 	}
 
 	/* wait for I/O completion */
-	for (i = 0; i < groups_per_page; i++)
-		if (bh[i])
-			wait_on_buffer(bh[i]);
-
-	err = -EIO;
-	for (i = 0; i < groups_per_page; i++)
-		if (bh[i] && !buffer_uptodate(bh[i]))
+	for (i = 0, group = first_group; i < groups_per_page; i++, group++) {
+		if (bh[i] && ext4_wait_block_bitmap(sb, group, bh[i])) {
+			err = -EIO;
 			goto out;
+		}
+	}
 
-	err = 0;
 	first_block = page->index * blocks_per_page;
 	for (i = 0; i < blocks_per_page; i++) {
 		int group;
@@ -1709,9 +1660,12 @@ int ext4_mb_find_by_goal(struct ext4_allocation_context *ac,
 	int max;
 	int err;
 	struct ext4_sb_info *sbi = EXT4_SB(ac->ac_sb);
+	struct ext4_group_info *grp = ext4_get_group_info(ac->ac_sb, group);
 	struct ext4_free_extent ex;
 
 	if (!(ac->ac_flags & EXT4_MB_HINT_TRY_GOAL))
+		return 0;
+	if (grp->bb_free == 0)
 		return 0;
 
 	err = ext4_mb_load_buddy(ac->ac_sb, group, e4b);
@@ -1909,6 +1863,12 @@ static int ext4_mb_good_group(struct ext4_allocation_context *ac,
 
 	BUG_ON(cr < 0 || cr >= 4);
 
+	free = grp->bb_free;
+	if (free == 0)
+		return 0;
+	if (cr <= 2 && free < ac->ac_g_ex.fe_len)
+		return 0;
+
 	/* We only do this if the grp has never been initialized */
 	if (unlikely(EXT4_MB_GRP_NEED_INIT(grp))) {
 		int ret = ext4_mb_init_group(ac->ac_sb, group);
@@ -1916,10 +1876,7 @@ static int ext4_mb_good_group(struct ext4_allocation_context *ac,
 			return 0;
 	}
 
-	free = grp->bb_free;
 	fragments = grp->bb_fragments;
-	if (free == 0)
-		return 0;
 	if (fragments == 0)
 		return 0;
 

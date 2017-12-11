@@ -52,6 +52,10 @@
 
 #include <asm/system.h>
 
+#ifdef CONFIG_KDEBUGD
+#include <kdebugd/kdebugd.h>
+#endif
+
 /* number of characters left in xmit buffer before select has we have room */
 #define WAKEUP_CHARS 256
 
@@ -73,6 +77,41 @@
 #define ECHO_OP_MOVE_BACK_COL 0x80
 #define ECHO_OP_SET_CANON_COL 0x81
 #define ECHO_OP_ERASE_TAB 0x82
+
+/* VDLinux, based SELP.Mstar default patch No.15,
+   n_tty serial input disable, SP Team 2010-01-29 */
+#ifdef CONFIG_SERIAL_INPUT_MANIPULATION
+
+#define MAX_STRING_SIZE 10
+static unsigned char enable_serial[MAX_STRING_SIZE];
+static unsigned char disable_serial[MAX_STRING_SIZE];
+
+static int enable_string_size=0;
+static int disable_string_size=0;
+
+static int enable_index = 0;
+static int disable_index = 0;
+
+#define SERIAL_INPUT_DISABLE 0
+#define SERIAL_INPUT_ENABLE 1
+
+#ifdef CONFIG_SERIAL_INPUT_DEFAULT_SETUP_ENABLE
+static int serial_enable = SERIAL_INPUT_ENABLE;
+#else
+static int serial_enable = SERIAL_INPUT_DISABLE;
+#endif
+
+struct tty_struct *INPUT_tty;
+#endif
+
+#ifdef CONFIG_SERIAL_INPUT_ENABLE_ONLY_NUMBER
+#define MAX_ARRAY 19
+int allow_char[] = { 48, 49, 50, 51, 52, 53, 54, 55, 56, 57 /* 0~9 */,
+                                                65, 66, 67, 68, 69, 70 /* A~F */,
+                                                32 /*space*/,
+                                                13 /*enter*/,
+                                                8  /*backspace*/ };
+#endif
 
 static inline int tty_put_user(struct tty_struct *tty, unsigned char x,
 			       unsigned char __user *ptr)
@@ -1083,6 +1122,158 @@ static inline void n_tty_receive_parity_error(struct tty_struct *tty,
 	wake_up_interruptible(&tty->read_wait);
 }
 
+#ifdef CONFIG_KDEBUGD
+/* kdebugd handling code */
+
+char kdbg_buf[DEBUG_MAX_RAW_CHARS] = "";
+char input_buf[2] = {'\0',};
+
+char sched_serial[10] = "";
+int  sched_serial_idx;
+
+static inline int check_debug_mode(struct tty_struct *tty, unsigned char c)
+{
+	debugd_event_t event;
+	int ret = 0;
+	static unsigned char prev_ch;
+	static unsigned int history_idx;
+	char *ptr = NULL;
+
+	if (tty != INPUT_tty)
+		return ret;
+
+#ifdef CONFIG_KDEBUGD_BG
+	if (!kdebugd_running || kdbg_mode) {
+#else
+	if (!kdebugd_running) {
+#endif
+		if (c == sched_serial[sched_serial_idx]) {
+
+			sched_serial_idx++;
+			/* printk(KERN_EMERG "[SP Kernel Debugger] "); */
+			/* printk("%d-th ENABLE Magic serial input match!\n" */
+			/*         ,sched_serial_idx); */
+			if (sched_serial_idx == strlen(sched_serial)) {
+#ifdef CONFIG_KDEBUGD_BG
+				if (!kdbg_mode){
+#endif
+				printk(KERN_EMERG "[SP Kernel Debugger] ");
+				printk("Enable Debug Mode!\n");
+				kdebugd_start();
+				kdebugd_running = 1;
+#ifdef CONFIG_KDEBUGD_BG
+				} else {
+					printk("Kdebugd already running in Background !!!\n");
+					ret = 1;
+				}
+#endif
+			}
+
+		} else
+			sched_serial_idx = 0;
+
+		return ret;
+	}
+
+	/* Now, kdebugd is running */
+
+	ret = 1;
+#ifdef CONFIG_KDEBUGD_BG
+	if (kdbg_mode == 1)
+		return 0;
+#endif
+
+	switch (c) {
+	case 0xd: /* \n */
+
+		/* remove leading and trailing whitespaces */
+		ptr = strstrip(kdbg_buf);
+
+		/* copy kdbg_buf to event */
+		strncpy(event.input_string, ptr, sizeof(event.input_string) - 1);
+		event.input_string[sizeof(event.input_string) - 1] = '\0';
+
+		queue_add_event(&kdebugd_queue, &event);
+
+		/* Fix Me:
+		   Actually, history_idx need to be set at everyevent_tail modifying code.
+		   Now, We just set history_idx as event_tail plus 2..
+		 */
+		history_idx = kdebugd_queue.event_tail + 2;
+
+		kdbg_buf[0] = '\0';
+
+		break;
+
+		/* When arrow key is pressed, the serial driver sends below character sequently. */
+		/* e.g.
+		   0x1b  => 0x5b => 0x41(up arrow)
+		   0x1b  => 0x5b => 0x42(down arrow)
+		 */
+	case 0x1b: /* Special Key */
+	case 0x5b: /* Special Key */
+		prev_ch = c;
+		break;
+
+	case 0x41: /* Up arrow */
+		if (prev_ch == 0x5b && history_idx > 0) { /* Special Key */
+			history_idx--;
+			printk("\n%s #%d> %s", sched_serial, history_idx, kdebugd_queue.events[history_idx].input_string);
+			snprintf(kdbg_buf, DEBUG_MAX_RAW_CHARS, "%s", kdebugd_queue.events[history_idx].input_string);
+			prev_ch = c;
+		}
+		break;
+
+	case 0x42: /* Down arrow */
+		if (prev_ch == 0x5b && history_idx <= kdebugd_queue.event_tail) { /* Special Key */
+			printk("\n%s #%d> %s", sched_serial, history_idx, kdebugd_queue.events[history_idx].input_string);
+			snprintf(kdbg_buf, DEBUG_MAX_RAW_CHARS, "%s", kdebugd_queue.events[history_idx].input_string);
+			history_idx++;
+			prev_ch = c;
+		}
+		break;
+
+	case 0x8: /* Backspace */
+	case 0x7F: /* Backspace */
+		if (strlen(kdbg_buf) > 0) {
+			kdbg_buf[strlen(kdbg_buf) - 1] = '\0';
+			/* print backspace, space, backspace to remove current character */
+			printk("%c %c", c, c);
+		}
+		break;
+
+#ifdef CONFIG_KDEBUGD_FTRACE
+	case 0x9: /* Tabspace */
+		/* add tabspace to event */
+		input_buf[0] = c;
+		if (strlen(kdbg_buf) + 1 < DEBUG_MAX_RAW_CHARS)
+			strncat(kdbg_buf, input_buf, 1);
+
+		/* copy kdbg_buf to event */
+		strncpy(event.input_string, kdbg_buf, sizeof(event.input_string) - 1);
+		event.input_string[sizeof(event.input_string) - 1] = '\0';
+		queue_add_event(&kdebugd_queue, &event);
+
+		kdbg_buf[0] = '\0';
+
+		break;
+#endif /* CONFIG_KDEBUGD_FTRACE */
+
+	default:
+		input_buf[0] = c;
+		if (strlen(kdbg_buf) + 1 < DEBUG_MAX_RAW_CHARS) {
+			strncat(kdbg_buf, input_buf, 1);
+		} else {
+			printk("\n[ALERT]Can't enter more input than %d size..", DEBUG_MAX_RAW_CHARS - 1);
+		}
+		printk("%c", c);
+		break;
+
+	}
+	return ret;
+}
+#endif
+
 /**
  *	n_tty_receive_char	-	perform processing
  *	@tty: terminal device
@@ -1097,6 +1288,95 @@ static inline void n_tty_receive_char(struct tty_struct *tty, unsigned char c)
 {
 	unsigned long flags;
 	int parmrk;
+
+#ifdef CONFIG_SERIAL_INPUT_ENABLE_ONLY_NUMBER
+        int check, i;
+#endif
+
+#ifdef CONFIG_KDEBUGD
+	if (check_debug_mode(tty, c))
+		return;
+#endif
+
+#ifdef CONFIG_SERIAL_INPUT_MANIPULATION
+        if( tty == INPUT_tty )
+        {
+                /* skip enable check if serial_enable == 1 */
+                if( serial_enable == SERIAL_INPUT_ENABLE )
+                        goto enable_check_skip;
+
+                /* for debug enable */
+                if( c == enable_serial[enable_index] )
+                {
+                        enable_index++;
+
+#ifdef CONFIG_SERIAL_INPUT_ENABLE_HELP_MSG
+                        printk(KERN_ALERT "\n" );
+                        printk(KERN_ALERT "[SERIAL INPUT MANAGE] %d-th ENABLE Magic serial input match!\n",
+                                                                enable_index );
+#endif
+                        if( enable_index == enable_string_size )
+                        {
+                                serial_enable = SERIAL_INPUT_ENABLE;
+                                disable_index = 0;
+
+#ifdef CONFIG_SERIAL_INPUT_ENABLE_HELP_MSG
+                                printk(KERN_ALERT "\n" );
+                                printk(KERN_ALERT "[SERIAL INPUT MANAGE] serial input ENABLE!!!!!\n");
+#endif
+                        }
+                        return;
+                }
+                else
+                        enable_index = 0;
+
+enable_check_skip:
+                /* skip disable check if serial_enable == 0 */
+                if( serial_enable == SERIAL_INPUT_DISABLE )
+                        return;
+
+                /* for debug disable */
+                if( c == disable_serial[disable_index] )
+                {
+                        disable_index++;
+
+#ifdef CONFIG_SERIAL_INPUT_ENABLE_HELP_MSG
+                        printk(KERN_ALERT "\n" );
+                        printk(KERN_ALERT "[SERIAL INPUT MANAGE] %d-th DISABLE Magic serial input match!\n",
+                                                                disable_index );
+#endif
+                        if( disable_index == disable_string_size )
+                        {
+                                serial_enable = SERIAL_INPUT_DISABLE;
+                                enable_index = 0;
+
+#ifdef CONFIG_SERIAL_INPUT_ENABLE_HELP_MSG
+                                printk(KERN_ALERT "\n" );
+                                printk(KERN_ALERT "[SERIAL INPUT MANAGE] serial input DISABLE!!!!!\n");
+#endif
+                                return;
+                        }
+                }
+                else
+                        disable_index = 0;
+#ifdef CONFIG_SERIAL_INPUT_ENABLE_ONLY_NUMBER
+                // additional checking 0~9, space, enter, backspace, SPTEAM 2010-02-07
+                check = i = 0;
+                while(i < MAX_ARRAY )
+                {
+                        if( allow_char[i] == c )
+                        {
+                                check = 1;
+                                break;
+                        }
+                        i++;
+                }
+
+                if( !check )
+                        return;
+#endif
+        }
+#endif
 
 	if (tty->raw) {
 		put_tty_queue(c, tty);
@@ -1559,6 +1839,19 @@ static void n_tty_close(struct tty_struct *tty)
 	}
 }
 
+#ifdef CONFIG_SERIAL_INPUT_MANIPULATION
+static int initial_setting = 0;
+void set_enable_string(char *val)
+{
+		if( initial_setting == 0 )
+		{
+				memset( enable_serial , 0x00, MAX_STRING_SIZE );
+				snprintf( enable_serial , MAX_STRING_SIZE, "%s", val);
+				initial_setting =  1;
+		}
+}
+#endif
+
 /**
  *	n_tty_open		-	open an ldisc
  *	@tty: terminal to open
@@ -1591,6 +1884,32 @@ static int n_tty_open(struct tty_struct *tty)
 	n_tty_set_termios(tty, NULL);
 	tty->minimum_to_wake = 1;
 	tty->closing = 0;
+
+#ifdef CONFIG_SERIAL_INPUT_MANIPULATION
+	if(tty == INPUT_tty )
+	{
+		memset( disable_serial, 0x00, MAX_STRING_SIZE );
+
+		snprintf( disable_serial, MAX_STRING_SIZE, "%s", CONFIG_SERIAL_INPUT_DISABLE_STRING);
+
+		enable_string_size  = strlen( enable_serial );
+		disable_string_size = strlen( disable_serial );
+
+#ifdef CONFIG_SERIAL_INPUT_ENABLE_HELP_MSG
+		printk(KERN_ALERT "[SERIAL INPUT MANAGE] disable_serial : %s(len:%d)\n", 
+				disable_serial, disable_string_size );
+		printk(KERN_ALERT "[SERIAL INPUT MANAGE] enable_serial : %s(len: %d)\n", 
+				enable_serial, enable_string_size );
+#endif
+
+#ifdef KDEBUGD_STRING
+		sprintf(sched_serial, "%s", KDEBUGD_STRING);
+		printk(KERN_ALERT "[KDEBUGD] enter : %s\n\n", KDEBUGD_STRING);
+#endif
+
+	}
+#endif
+
 	return 0;
 }
 
@@ -1697,6 +2016,45 @@ static int job_control(struct tty_struct *tty, struct file *file)
 	return 0;
 }
 
+#ifdef CONFIG_UART_BROADCAST
+extern char *saved_command_line;
+LIST_HEAD(broadcast_tty_list);
+EXPORT_SYMBOL(broadcast_tty_list);
+DEFINE_SPINLOCK(broadcast_tty_lock);
+EXPORT_SYMBOL(broadcast_tty_lock);
+
+void tty_add(struct tty_struct *new)
+{
+   if( strstr( saved_command_line, new->name ))
+   {
+       spin_lock(&broadcast_tty_lock);
+       list_add_tail( &new->list, &broadcast_tty_list);
+       spin_unlock(&broadcast_tty_lock);
+   }
+}
+
+void tty_del(struct tty_struct *old)
+{
+   if( strstr( saved_command_line, old->name ))
+   {
+       spin_lock(&broadcast_tty_lock);
+       list_del( &old->list );
+       spin_unlock(&broadcast_tty_lock);
+   }
+}
+
+void tty_B_lock(void)
+{
+   spin_lock(&broadcast_tty_lock);
+}
+EXPORT_SYMBOL(tty_B_lock);
+
+void tty_B_unlock(void)
+{
+   spin_unlock(&broadcast_tty_lock);
+}
+EXPORT_SYMBOL(tty_B_unlock);
+#endif
 
 /**
  *	n_tty_read		-	read function for tty
@@ -1814,7 +2172,13 @@ do_it_again:
 			}
 			/* FIXME: does n_tty_set_room need locking ? */
 			n_tty_set_room(tty);
+#ifdef CONFIG_UART_BROADCAST
+			tty_add(tty);
+#endif
 			timeout = schedule_timeout(timeout);
+#ifdef CONFIG_UART_BROADCAST
+			tty_del(tty);
+#endif
 			BUG_ON(!tty->read_buf);
 			continue;
 		}

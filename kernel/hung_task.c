@@ -16,6 +16,13 @@
 #include <linux/module.h>
 #include <linux/sysctl.h>
 
+
+#ifdef CONFIG_SUPPORT_REBOOT
+extern int micom_reboot( void );
+extern int reboot_permit(void);
+extern int print_permit(void);
+#endif
+
 /*
  * The number of tasks checked:
  */
@@ -68,6 +75,10 @@ static struct notifier_block panic_block = {
 	.notifier_call = hung_task_panic,
 };
 
+#ifdef CONFIG_UNHANDLED_IRQ_TRACE_DEBUGGING
+extern void show_irq(void);
+static int initial_print=0;
+#endif
 static void check_hung_task(struct task_struct *t, unsigned long timeout)
 {
 	unsigned long switch_count = t->nvcsw + t->nivcsw;
@@ -99,6 +110,14 @@ static void check_hung_task(struct task_struct *t, unsigned long timeout)
 	 * Ok, the task did not get scheduled for more than 2 minutes,
 	 * complain:
 	 */
+#ifdef CONFIG_SUPPORT_REBOOT
+	if( !print_permit() && reboot_permit() )
+	{
+		micom_reboot();
+		while(1);
+	}
+#endif
+
 	printk(KERN_ERR "INFO: task %s:%d blocked for more than "
 			"%ld seconds.\n", t->comm, t->pid, timeout);
 	printk(KERN_ERR "\"echo 0 > /proc/sys/kernel/hung_task_timeout_secs\""
@@ -107,6 +126,23 @@ static void check_hung_task(struct task_struct *t, unsigned long timeout)
 	debug_show_held_locks(t);
 
 	touch_nmi_watchdog();
+
+#ifdef CONFIG_UNHANDLED_IRQ_TRACE_DEBUGGING
+	if( initial_print == 0 )
+	{
+		initial_print++;
+		show_irq();
+	}
+#endif
+
+#ifdef CONFIG_SUPPORT_REBOOT
+	if( reboot_permit() )	
+	{
+		micom_reboot();
+		while(1);
+	}
+#endif
+
 
 	if (sysctl_hung_task_panic)
 		panic("hung_task: blocked tasks");

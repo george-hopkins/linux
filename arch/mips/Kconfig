@@ -25,6 +25,10 @@ config MIPS
 	select GENERIC_IRQ_SHOW
 	select HAVE_ARCH_JUMP_LABEL
 
+if NVT_CHIP
+source "arch/mips/nvt-boards/Kconfig"
+endif
+
 menu "Machine selection"
 
 config ZONE_DMA
@@ -33,6 +37,17 @@ config ZONE_DMA
 choice
 	prompt "System type"
 	default SGI_IP22
+
+config NVT_CHIP
+	bool "Novatek SOC"
+	select SYS_SUPPORTS_HIGHMEM
+	help
+		Support Novatek board
+
+config MSTAR_CHIP
+	bool "Mstar Chip Family"
+	help
+		Support SEC board
 
 config MIPS_ALCHEMY
 	bool "Alchemy processor based machines"
@@ -2089,7 +2104,7 @@ config NODES_SHIFT
 
 config HW_PERF_EVENTS
 	bool "Enable hardware performance counter support for perf events"
-	depends on PERF_EVENTS && !MIPS_MT_SMTC && OPROFILE=n && CPU_MIPS32
+	depends on PERF_EVENTS && !MIPS_MT_SMTC  && CPU_MIPS32
 	default y
 	help
 	  Enable hardware performance counter support for perf events. If
@@ -2464,11 +2479,11 @@ endmenu
 menu "Power management options"
 
 config ARCH_HIBERNATION_POSSIBLE
-	def_bool y
+	def_bool n
 	depends on SYS_SUPPORTS_HOTPLUG_CPU || !SMP
 
 config ARCH_SUSPEND_POSSIBLE
-	def_bool y
+	def_bool n
 	depends on SYS_SUPPORTS_HOTPLUG_CPU || !SMP
 
 source "kernel/power/Kconfig"
@@ -2484,6 +2499,9 @@ source "drivers/Kconfig"
 source "fs/Kconfig"
 
 source "arch/mips/Kconfig.debug"
+
+source "arch/mips/Kconfig.VDLP"
+source "arch/mips/Kconfig.Secure"
 
 source "security/Kconfig"
 
@@ -2506,3 +2524,4 @@ source drivers/virtio/Kconfig
 endif # VIRTUALIZATION
 
 source "lib/Kconfig"
+

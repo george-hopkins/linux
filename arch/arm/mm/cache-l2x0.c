@@ -23,6 +23,10 @@
 #include <asm/cacheflush.h>
 #include <asm/hardware/cache-l2x0.h>
 
+#if defined(CONFIG_MSTAR_AMBER3) || defined(CONFIG_MSTAR_EDISON)
+#include <chip_setup.h>
+#endif
+
 #define CACHE_LINE_SIZE		32
 
 static void __iomem *l2x0_base;
@@ -118,6 +122,9 @@ static void l2x0_cache_sync(void)
 	spin_lock_irqsave(&l2x0_lock, flags);
 	cache_sync();
 	spin_unlock_irqrestore(&l2x0_lock, flags);
+#if defined(CONFIG_MSTAR_AMBER3) || defined(CONFIG_MSTAR_EDISON)
+	_chip_flush_miu_pipe();
+#endif
 }
 
 static void __l2x0_flush_all(void)
@@ -137,6 +144,9 @@ static void l2x0_flush_all(void)
 	spin_lock_irqsave(&l2x0_lock, flags);
 	__l2x0_flush_all();
 	spin_unlock_irqrestore(&l2x0_lock, flags);
+#if defined(CONFIG_MSTAR_AMBER3) || defined(CONFIG_MSTAR_EDISON)
+	_chip_flush_miu_pipe();
+#endif
 }
 
 static void l2x0_clean_all(void)
@@ -149,6 +159,9 @@ static void l2x0_clean_all(void)
 	cache_wait_way(l2x0_base + L2X0_CLEAN_WAY, l2x0_way_mask);
 	cache_sync();
 	spin_unlock_irqrestore(&l2x0_lock, flags);
+#if defined(CONFIG_MSTAR_AMBER3) || defined(CONFIG_MSTAR_EDISON)
+	_chip_flush_miu_pipe();
+#endif
 }
 
 static void l2x0_inv_all(void)
@@ -232,6 +245,9 @@ static void l2x0_clean_range(unsigned long start, unsigned long end)
 	cache_wait(base + L2X0_CLEAN_LINE_PA, 1);
 	cache_sync();
 	spin_unlock_irqrestore(&l2x0_lock, flags);
+#if defined(CONFIG_MSTAR_AMBER3) || defined(CONFIG_MSTAR_EDISON)
+	_chip_flush_miu_pipe();
+#endif
 }
 
 static void l2x0_flush_range(unsigned long start, unsigned long end)
@@ -264,7 +280,18 @@ static void l2x0_flush_range(unsigned long start, unsigned long end)
 	cache_wait(base + L2X0_CLEAN_INV_LINE_PA, 1);
 	cache_sync();
 	spin_unlock_irqrestore(&l2x0_lock, flags);
+#if defined(CONFIG_MSTAR_AMBER3) || defined(CONFIG_MSTAR_EDISON)
+	_chip_flush_miu_pipe();
+#endif
 }
+
+#if defined(CONFIG_MSTAR_AMBER3) || defined(CONFIG_MSTAR_EDISON)
+static inline int l2x0_is_enable(void)
+{
+              
+    return (readl_relaxed(l2x0_base + L2X0_CTRL) & 1);
+}
+#endif
 
 static void l2x0_disable(void)
 {
@@ -338,8 +365,14 @@ void __init l2x0_init(void __iomem *base, __u32 aux_val, __u32 aux_mask)
 		writel_relaxed(1, l2x0_base + L2X0_CTRL);
 	}
 
+#if defined(CONFIG_MSTAR_CHIP)
+	outer_cache.is_enable = l2x0_is_enable;
+#endif
 	outer_cache.inv_range = l2x0_inv_range;
 	outer_cache.clean_range = l2x0_clean_range;
+#if defined(CONFIG_MSTAR_CHIP)
+	outer_cache.clean_all= l2x0_clean_all;
+#endif
 	outer_cache.flush_range = l2x0_flush_range;
 	outer_cache.sync = l2x0_cache_sync;
 	outer_cache.flush_all = l2x0_flush_all;

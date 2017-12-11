@@ -53,6 +53,9 @@ enum ipi_msg_type {
 	IPI_CALL_FUNC,
 	IPI_CALL_FUNC_SINGLE,
 	IPI_CPU_STOP,
+#ifdef CONFIG_ACCURATE_COREDUMP
+	IPI_SYNC_BLOCK,
+#endif
 };
 
 int __cpuinit __cpu_up(unsigned int cpu)
@@ -445,9 +448,7 @@ static DEFINE_PER_CPU(struct clock_event_device, percpu_clockevent);
 static void ipi_timer(void)
 {
 	struct clock_event_device *evt = &__get_cpu_var(percpu_clockevent);
-	irq_enter();
 	evt->event_handler(evt);
-	irq_exit();
 }
 
 #ifdef CONFIG_LOCAL_TIMERS
@@ -458,7 +459,9 @@ asmlinkage void __exception_irq_entry do_local_timer(struct pt_regs *regs)
 
 	if (local_timer_ack()) {
 		__inc_irq_stat(cpu, local_timer_irqs);
+		irq_enter();
 		ipi_timer();
+		irq_exit();
 	}
 
 	set_irq_regs(old_regs);
@@ -536,12 +539,18 @@ static DEFINE_SPINLOCK(stop_lock);
 /*
  * ipi_cpu_stop - handle IPI from smp_send_stop()
  */
-static void ipi_cpu_stop(unsigned int cpu)
+static void ipi_cpu_stop(unsigned int cpu, struct pt_regs *regs)
 {
 	if (system_state == SYSTEM_BOOTING ||
 	    system_state == SYSTEM_RUNNING) {
 		spin_lock(&stop_lock);
 		printk(KERN_CRIT "CPU%u: stopping\n", cpu);
+
+		struct thread_info *thread = current_thread_info();
+		printk(KERN_CRIT "Process %.*s (pid: %d, stack limit = 0x%p)\n",
+			TASK_COMM_LEN, thread->task->comm, task_pid_nr(thread->task), thread + 1);
+
+	__show_regs(regs);
 		dump_stack();
 		spin_unlock(&stop_lock);
 	}
@@ -554,6 +563,32 @@ static void ipi_cpu_stop(unsigned int cpu)
 	while (1)
 		cpu_relax();
 }
+
+#ifdef CONFIG_ACCURATE_COREDUMP
+int lock_other_cpus = 0;
+
+void block_other_cpus_on_core_dump(void)
+{
+	cpumask_t mask = cpu_online_map;
+
+	lock_other_cpus = 1;
+	cpu_clear(smp_processor_id(), mask);
+	smp_cross_call(&mask, IPI_SYNC_BLOCK);
+}
+
+void unblock_other_cpus_on_core_dump(void)
+{
+	lock_other_cpus = 0;
+}
+
+void ipi_sync_block(void)
+{
+	preempt_disable();
+	while (lock_other_cpus)
+		cpu_relax();
+	preempt_enable();
+}
+#endif
 
 /*
  * Main handler for inter-processor interrupts
@@ -568,7 +603,9 @@ asmlinkage void __exception_irq_entry do_IPI(int ipinr, struct pt_regs *regs)
 
 	switch (ipinr) {
 	case IPI_TIMER:
+		irq_enter();
 		ipi_timer();
+		irq_exit();
 		break;
 
 	case IPI_RESCHEDULE:
@@ -576,16 +613,32 @@ asmlinkage void __exception_irq_entry do_IPI(int ipinr, struct pt_regs *regs)
 		break;
 
 	case IPI_CALL_FUNC:
+		irq_enter();
 		generic_smp_call_function_interrupt();
+		irq_exit();
 		break;
 
 	case IPI_CALL_FUNC_SINGLE:
+		irq_enter();
 		generic_smp_call_function_single_interrupt();
+		irq_exit();
 		break;
 
 	case IPI_CPU_STOP:
-		ipi_cpu_stop(cpu);
+		irq_enter();
+		ipi_cpu_stop(cpu, regs);
+		irq_exit();
 		break;
+#ifdef CONFIG_ACCURATE_COREDUMP
+	case IPI_SYNC_BLOCK:
+		/* ipi irq statistics is not update */
+		irq_enter();
+		ipi_sync_block();
+		irq_exit();
+		scheduler_ipi();
+		/* rescheduling starts after handler return */
+		break;
+#endif
 
 	default:
 		printk(KERN_CRIT "CPU%u: Unknown IPI message 0x%x\n",
@@ -602,6 +655,10 @@ void smp_send_reschedule(int cpu)
 
 void smp_send_stop(void)
 {
+       printk(KERN_ERR"================================================================================\n");
+        printk(KERN_ERR" SMP Send Stop Other CPU!\n");
+        printk(KERN_ERR"================================================================================\n");
+
 	unsigned long timeout;
 
 	if (num_online_cpus() > 1) {

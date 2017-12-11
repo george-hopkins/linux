@@ -20,6 +20,11 @@
 #include <linux/time.h>
 #include <linux/tick.h>
 #include <linux/stop_machine.h>
+#ifdef CONFIG_KDEBUGD_FTRACE
+#include "kdbg_util.h"
+#include <trace/kdbg_ftrace_helper.h>
+#include <trace/kdbg-ftrace.h>
+#endif /* CONFIG_KDEBUGD_FTRACE */
 
 /* Structure holding internal timekeeping values. */
 struct timekeeper {
@@ -118,6 +123,30 @@ static inline s64 timekeeping_get_ns(void)
 	return clocksource_cyc2ns(cycle_delta, timekeeper.mult,
 				  timekeeper.shift);
 }
+
+#ifdef CONFIG_KDEBUGD_FTRACE
+/* kdbg_ftrace_timekeeping_get_ns_raw
+ * function to get the raw nanoseconds value.
+ */
+s64 notrace kdbg_ftrace_timekeeping_get_ns_raw(void)
+{
+	cycle_t cycle_now, cycle_delta;
+	struct clocksource *clock;
+
+	if (fconf.trace_timestamp_nsec_status) {
+		/* read clocksource: */
+		clock = timekeeper.clock;
+		cycle_now = clock->read(clock);
+
+		/* calculate the delta since the last update_wall_time: */
+		cycle_delta = (cycle_now - clock->cycle_last) & clock->mask;
+
+		/* return delta convert to nanoseconds using ntp adjusted mult. */
+		return (u64) (cycle_delta * (clock->mult >> clock->shift));
+	} else
+		return 0;
+}
+#endif /* CONFIG_KDEBUGD_FTRACE */
 
 static inline s64 timekeeping_get_ns_raw(void)
 {

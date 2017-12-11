@@ -354,6 +354,16 @@ int unhandled_signal(struct task_struct *tsk, int sig);
 	rt_sigmask(SIGSTOP)   |  rt_sigmask(SIGTSTP)   | \
 	rt_sigmask(SIGTTIN)   |  rt_sigmask(SIGTTOU)   )
 
+#ifdef CONFIG_MSTAR_EDISON // X12 production team wants to change SIGPIPE default action to "Core".
+#define SIG_KERNEL_COREDUMP_MASK (\
+        rt_sigmask(SIGPIPE)   |  \
+        rt_sigmask(SIGQUIT)   |  rt_sigmask(SIGILL)    | \
+	rt_sigmask(SIGTRAP)   |  rt_sigmask(SIGABRT)   | \
+        rt_sigmask(SIGFPE)    |  rt_sigmask(SIGSEGV)   | \
+	rt_sigmask(SIGBUS)    |  rt_sigmask(SIGSYS)    | \
+        rt_sigmask(SIGXCPU)   |  rt_sigmask(SIGXFSZ)   | \
+	SIGEMT_MASK				       )
+#else
 #define SIG_KERNEL_COREDUMP_MASK (\
         rt_sigmask(SIGQUIT)   |  rt_sigmask(SIGILL)    | \
 	rt_sigmask(SIGTRAP)   |  rt_sigmask(SIGABRT)   | \
@@ -361,6 +371,7 @@ int unhandled_signal(struct task_struct *tsk, int sig);
 	rt_sigmask(SIGBUS)    |  rt_sigmask(SIGSYS)    | \
         rt_sigmask(SIGXCPU)   |  rt_sigmask(SIGXFSZ)   | \
 	SIGEMT_MASK				       )
+#endif
 
 #define SIG_KERNEL_IGNORE_MASK (\
         rt_sigmask(SIGCONT)   |  rt_sigmask(SIGCHLD)   | \
@@ -384,6 +395,10 @@ int unhandled_signal(struct task_struct *tsk, int sig);
 	 (t)->sighand->action[(signr)-1].sa.sa_handler == SIG_DFL)
 
 void signals_init(void);
+
+#ifdef CONFIG_ACCURATE_COREDUMP
+extern void early_coredump_wait(unsigned int);
+#endif
 
 #endif /* __KERNEL__ */
 

@@ -358,6 +358,12 @@ extern struct cpufreq_governor cpufreq_gov_ondemand;
 #elif defined(CONFIG_CPU_FREQ_DEFAULT_GOV_CONSERVATIVE)
 extern struct cpufreq_governor cpufreq_gov_conservative;
 #define CPUFREQ_DEFAULT_GOVERNOR	(&cpufreq_gov_conservative)
+#elif defined(CONFIG_CPU_FREQ_DEFAULT_GOV_FOXAP)
+extern struct cpufreq_governor cpufreq_gov_foxap;
+#define CPUFREQ_DEFAULT_GOVERNOR	(&cpufreq_gov_foxap)
+#elif defined(CONFIG_CPU_FREQ_DEFAULT_GOV_INTERACTIVE)
+extern struct cpufreq_governor cpufreq_gov_interactive;
+#define CPUFREQ_DEFAULT_GOVERNOR  (&cpufreq_gov_interactive)
 #endif
 
 
@@ -398,6 +404,10 @@ void cpufreq_frequency_table_get_attr(struct cpufreq_frequency_table *table,
 				      unsigned int cpu);
 
 void cpufreq_frequency_table_put_attr(unsigned int cpu);
+
+#if defined(CONFIG_ARCH_CCEP)
+void adjust_jiffies(unsigned long val, struct cpufreq_freqs *ci);
+#endif
 
 
 #endif /* _LINUX_CPUFREQ_H */

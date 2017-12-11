@@ -25,8 +25,14 @@
 #define IO_BASE			_AC(0xa0000000, UL)
 #define UNCAC_BASE		_AC(0xa0000000, UL)
 
+
+
 #ifndef MAP_BASE
-#define MAP_BASE		_AC(0xc0000000, UL)
+#ifdef CONFIG_MSTAR_CHIP
+#define MAP_BASE                _AC(0xe0000000, UL)
+#else
+#define MAP_BASE                _AC(0xc0000000, UL)
+#endif
 #endif
 
 /*
@@ -57,7 +63,11 @@
 #endif
 
 #ifndef MAP_BASE
+#ifdef CONFIG_MSTAR_CHIP
+#define MAP_BASE                _AC(0xe000000000000000, UL)
+#else
 #define MAP_BASE		_AC(0xc000000000000000, UL)
+#endif
 #endif
 
 /*

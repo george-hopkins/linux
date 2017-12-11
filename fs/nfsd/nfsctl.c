@@ -56,6 +56,9 @@ enum {
 #endif
 };
 
+struct workqueue_struct *nfs_umountd_workqueue;
+struct work_struct nfs_umount_work;
+
 /*
  * write() for these nodes.
  */
@@ -1466,6 +1469,17 @@ static int create_proc_exports_entry(void)
 }
 #endif
 
+static void nfs_umountd_fn(struct work_struct *unused)
+{
+	nfsd_export_flush();
+}
+
+static void nfsd_umount_destroy(void)
+{
+	if (nfs_umountd_workqueue)
+		destroy_workqueue(nfs_umountd_workqueue);
+}
+
 static int __init init_nfsd(void)
 {
 	int retval;
@@ -1491,6 +1505,13 @@ static int __init init_nfsd(void)
 	retval = register_filesystem(&nfsd_fs_type);
 	if (retval)
 		goto out_free_all;
+
+	nfs_umountd_workqueue = create_singlethread_workqueue("nfs.umountd");
+	if (!nfs_umountd_workqueue)
+		printk(KERN_ERR "nfsd: Failed to create nfs.umountd workqueue\n");
+	else
+		INIT_WORK(&nfs_umount_work, nfs_umountd_fn);
+
 	return 0;
 out_free_all:
 	remove_proc_entry("fs/nfs/exports", NULL);
@@ -1510,6 +1531,7 @@ out_free_stat:
 
 static void __exit exit_nfsd(void)
 {
+	nfsd_umount_destroy();
 	nfsd_export_shutdown();
 	nfsd_reply_cache_shutdown();
 	remove_proc_entry("fs/nfs/exports", NULL);

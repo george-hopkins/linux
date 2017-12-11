@@ -36,7 +36,9 @@
 #include <linux/module.h>
 #include <linux/magic.h>
 #include <linux/xattr.h>
-
+#ifdef CONFIG_GZMANAGER_DECOMPRESS
+#include <linux/gzmanager.h>
+#endif
 #include "squashfs_fs.h"
 #include "squashfs_fs_sb.h"
 #include "squashfs_fs_i.h"
@@ -47,6 +49,7 @@
 static struct file_system_type squashfs_fs_type;
 static const struct super_operations squashfs_super_ops;
 
+#ifndef CONFIG_GZMANAGER_DECOMPRESS
 static const struct squashfs_decompressor *supported_squashfs_filesystem(short
 	major, short minor, short id)
 {
@@ -72,7 +75,7 @@ static const struct squashfs_decompressor *supported_squashfs_filesystem(short
 
 	return decompressor;
 }
-
+#endif
 
 static int squashfs_fill_super(struct super_block *sb, void *data, int silent)
 {
@@ -85,6 +88,9 @@ static int squashfs_fill_super(struct super_block *sb, void *data, int silent)
 	unsigned int fragments;
 	u64 lookup_table_start, xattr_id_table_start, next_table;
 	int err;
+#ifdef CONFIG_GZMANAGER_DECOMPRESS
+	int gz_flag = 0,gz_comp;
+#endif
 
 	TRACE("Entered squashfs_fill_superblock\n");
 
@@ -95,11 +101,20 @@ static int squashfs_fill_super(struct super_block *sb, void *data, int silent)
 	}
 	msblk = sb->s_fs_info;
 
+#ifdef CONFIG_SQUASHFS_BLOCK_SIZE_1K_TO_4K
+	msblk->devblksize = sb_min_blocksize(sb, PAGE_SIZE);
+#else
 	msblk->devblksize = sb_min_blocksize(sb, BLOCK_SIZE);
+#endif
+
 	msblk->devblksize_log2 = ffz(~msblk->devblksize);
 
 	mutex_init(&msblk->read_data_mutex);
 	mutex_init(&msblk->meta_index_mutex);
+#ifdef CONFIG_SQUASHFS_INCL_BIO
+    /* init wait queue */
+    init_waitqueue_head (&msblk->wq);
+#endif
 
 	/*
 	 * msblk->bytes_used is checked in squashfs_read_table to ensure reads
@@ -128,6 +143,19 @@ static int squashfs_fill_super(struct super_block *sb, void *data, int silent)
 		goto failed_mount;
 	}
 
+#ifdef CONFIG_GZMANAGER_DECOMPRESS
+	gz_comp = le16_to_cpu(sblk->compression);
+	if(ZLIB_COMPRESSION == gz_comp){
+		gz_flag |= useZLIB;
+		gz_flag |= useHWSW;
+	}else if(GZIP_COMPRESSION == gz_comp){
+		gz_flag |= useHWSW;
+		gz_flag |= useGZIP;
+	}else{
+		printk(KERN_EMERG"[%s] Decompressor is not supported by"\
+				"gzManager \n",__FUNCTION__);
+	}
+#else
 	/* Check the MAJOR & MINOR versions and lookup compression type */
 	msblk->decompressor = supported_squashfs_filesystem(
 			le16_to_cpu(sblk->s_major),
@@ -135,7 +163,7 @@ static int squashfs_fill_super(struct super_block *sb, void *data, int silent)
 			le16_to_cpu(sblk->compression));
 	if (msblk->decompressor == NULL)
 		goto failed_mount;
-
+#endif
 	/* Check the filesystem does not extend beyond the end of the
 	   block device */
 	msblk->bytes_used = le64_to_cpu(sblk->bytes_used);
@@ -194,18 +222,32 @@ static int squashfs_fill_super(struct super_block *sb, void *data, int silent)
 	sb->s_op = &squashfs_super_ops;
 
 	err = -ENOMEM;
-
+#ifdef CONFIG_SQUASHFS_GZIP_LINEAR_MEM
+	msblk->block_cache = squashfs_cache_init("metadata",
+			SQUASHFS_CACHED_BLKS, SQUASHFS_METADATA_SIZE,gz_flag);
+#else
 	msblk->block_cache = squashfs_cache_init("metadata",
 			SQUASHFS_CACHED_BLKS, SQUASHFS_METADATA_SIZE);
+#endif
 	if (msblk->block_cache == NULL)
 		goto failed_mount;
 
 	/* Allocate read_page block */
+#ifdef CONFIG_SQUASHFS_GZIP_LINEAR_MEM
+	msblk->read_page = squashfs_cache_init("data", 1, msblk->block_size,gz_flag);
+#else
 	msblk->read_page = squashfs_cache_init("data", 1, msblk->block_size);
+#endif
 	if (msblk->read_page == NULL) {
 		ERROR("Failed to allocate read_page block\n");
 		goto failed_mount;
 	}
+
+#ifdef CONFIG_GZMANAGER_DECOMPRESS
+	msblk->client = gzM_register_client(GZ_SQUASHFS,gz_flag);
+	if(NULL == msblk->client)
+		goto failed_mount;
+#else
 
 	msblk->stream = squashfs_decompressor_init(sb, flags);
 	if (IS_ERR(msblk->stream)) {
@@ -213,6 +255,7 @@ static int squashfs_fill_super(struct super_block *sb, void *data, int silent)
 		msblk->stream = NULL;
 		goto failed_mount;
 	}
+#endif
 
 	/* Handle xattrs */
 	sb->s_xattr = squashfs_xattr_handlers;
@@ -269,9 +312,13 @@ handle_fragments:
 	fragments = le32_to_cpu(sblk->fragments);
 	if (fragments == 0)
 		goto check_directory_table;
-
+#ifdef CONFIG_SQUASHFS_GZIP_LINEAR_MEM
+	msblk->fragment_cache = squashfs_cache_init("fragment",
+		SQUASHFS_CACHED_FRAGMENTS, msblk->block_size,gz_flag);
+#else
 	msblk->fragment_cache = squashfs_cache_init("fragment",
 		SQUASHFS_CACHED_FRAGMENTS, msblk->block_size);
+#endif
 	if (msblk->fragment_cache == NULL) {
 		err = -ENOMEM;
 		goto failed_mount;
@@ -329,10 +376,23 @@ check_directory_table:
 	return 0;
 
 failed_mount:
+#ifdef CONFIG_SQUASHFS_GZIP_LINEAR_MEM
+   squashfs_cache_delete(msblk->block_cache, gz_flag);
+   squashfs_cache_delete(msblk->fragment_cache, gz_flag);
+   squashfs_cache_delete(msblk->read_page, gz_flag);
+#else
 	squashfs_cache_delete(msblk->block_cache);
 	squashfs_cache_delete(msblk->fragment_cache);
 	squashfs_cache_delete(msblk->read_page);
+#endif
+
+#ifdef CONFIG_GZMANAGER_DECOMPRESS
+	if(NULL != msblk->client)
+		gzM_unregister_client(msblk->client);
+	msblk->client = NULL;
+#else
 	squashfs_decompressor_free(msblk, msblk->stream);
+#endif
 	kfree(msblk->inode_lookup_table);
 	kfree(msblk->fragment_index);
 	kfree(msblk->id_table);
@@ -376,10 +436,26 @@ static void squashfs_put_super(struct super_block *sb)
 {
 	if (sb->s_fs_info) {
 		struct squashfs_sb_info *sbi = sb->s_fs_info;
+#ifdef CONFIG_SQUASHFS_GZIP_LINEAR_MEM
+   if(NULL != sbi->client){
+           squashfs_cache_delete(sbi->block_cache, sbi->client->flags);
+           squashfs_cache_delete(sbi->fragment_cache, sbi->client->flags);
+           squashfs_cache_delete(sbi->read_page, sbi->client->flags);
+       }
+#else
+
 		squashfs_cache_delete(sbi->block_cache);
 		squashfs_cache_delete(sbi->fragment_cache);
 		squashfs_cache_delete(sbi->read_page);
+#endif
+
+#ifdef CONFIG_GZMANAGER_DECOMPRESS
+		if(NULL != sbi->client)
+			gzM_unregister_client(sbi->client);
+		sbi->client = NULL;
+#else
 		squashfs_decompressor_free(sbi, sbi->stream);
+#endif
 		kfree(sbi->id_table);
 		kfree(sbi->fragment_index);
 		kfree(sbi->meta_index);

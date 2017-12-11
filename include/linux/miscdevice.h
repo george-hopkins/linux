@@ -40,6 +40,10 @@
 #define BTRFS_MINOR		234
 #define AUTOFS_MINOR		235
 #define MAPPER_CTRL_MINOR	236
+#ifdef CONFIG_ORSAY_VDBINDER_IPC
+#define VDBINDER_MINOR		240
+#define VDASHMEM_MINOR		241
+#endif
 #define MISC_DYNAMIC_MINOR	255
 
 struct device;

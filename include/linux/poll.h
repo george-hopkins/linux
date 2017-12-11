@@ -80,7 +80,21 @@ static inline int poll_schedule(struct poll_wqueues *pwq, int state)
 {
 	return poll_schedule_timeout(pwq, state, NULL, 0);
 }
+static inline bool poll_does_not_wait(const poll_table *p)
+{
+        return p == NULL || p->qproc == NULL; // prashanth changed to qproc from _qproc
+}
 
+/*
+ * Return the set of events that the application wants to poll for.
+ * This is useful for drivers that need to know whether a DMA transfer has
+ * to be started implicitly on poll(). You typically only want to do that
+ * if the application is actually polling for POLLIN and/or POLLOUT.
+ */
+static inline unsigned long poll_requested_events(const poll_table *p)
+{
+        return p ? p->key : ~0UL; // prashanth changed to key from _key
+}
 /*
  * Scalable version of the fd_set.
  */

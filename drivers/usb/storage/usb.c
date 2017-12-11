@@ -276,6 +276,14 @@ static int usb_stor_control_thread(void * __us)
 		/* lock the device pointers */
 		mutex_lock(&(us->dev_mutex));
 
+#ifdef SAMSUNG_PATCH_WITH_USB_ENHANCEMENT
+                //patch JAN-27-2007 for inhancement disconnect speed
+                if (test_bit(US_FLIDX_CONNRESET, &us->dflags)) {
+                        US_DEBUGP("-- exiting\n");
+                        mutex_unlock(&us->dev_mutex);
+                        break;
+                }
+#endif 
 		/* lock access to the state */
 		scsi_lock(host);
 
@@ -521,6 +529,10 @@ static int get_device_info(struct us_data *us, const struct usb_device_id *id,
 		&us->pusb_intf->cur_altsetting->desc;
 	struct device *pdev = &us->pusb_intf->dev;
 
+#ifdef SAMSUNG_PATCH_WITH_USB_HOTPLUG
+        int retval = 0;  //patch JAN-25-2007
+#endif
+
 	/* Store the entries */
 	us->unusual_dev = unusual_dev;
 	us->subclass = (unusual_dev->useProtocol == USB_SC_DEVICE) ?
@@ -556,11 +568,13 @@ static int get_device_info(struct us_data *us, const struct usb_device_id *id,
 	 * from the unusual_devs.h table.
 	 */
 	if (id->idVendor || id->idProduct) {
+#ifndef CONFIG_NVT_NT72568
 		static const char *msgs[3] = {
 			"an unneeded SubClass entry",
 			"an unneeded Protocol entry",
 			"unneeded SubClass and Protocol entries"};
 		struct usb_device_descriptor *ddesc = &dev->descriptor;
+#endif
 		int msg = -1;
 
 		if (unusual_dev->useProtocol != USB_SC_DEVICE &&
@@ -569,6 +583,7 @@ static int get_device_info(struct us_data *us, const struct usb_device_id *id,
 		if (unusual_dev->useTransport != USB_PR_DEVICE &&
 			us->protocol == idesc->bInterfaceProtocol)
 			msg += 2;
+#ifndef CONFIG_NVT_NT72568
 		if (msg >= 0 && !(us->fflags & US_FL_NEED_OVERRIDE))
 			dev_notice(pdev, "This device "
 					"(%04x,%04x,%04x S %02x P %02x)"
@@ -584,8 +599,47 @@ static int get_device_info(struct us_data *us, const struct usb_device_id *id,
 					idesc->bInterfaceProtocol,
 					msgs[msg],
 					utsname()->release);
+#endif
 	}
+#ifdef SAMSUNG_PATCH_WITH_USB_HOTPLUG
+	         /* Read the device's string descriptors */
+      		 //patch JAN-25-2007
+       		 if (dev->descriptor.iManufacturer)
+       	         	retval = usb_string(dev, dev->descriptor.iManufacturer,
+                        	   us->vendor, sizeof(us->vendor));
+	        // patch JAN-25-2007 for disconnect speed inhancement
+        	if(retval == -ECONNRESET)
+	                goto readDesEnd;
+        	if (dev->descriptor.iProduct)
+                	retval = usb_string(dev, dev->descriptor.iProduct,
+                        	   us->product, sizeof(us->product));
+	        // patch JAN-25-2007 for disconnect speed inhancement
+        	if(retval == -ECONNRESET)
+                	goto readDesEnd;
+	        if (dev->descriptor.iSerialNumber)
+        	        retval = usb_string(dev, dev->descriptor.iSerialNumber,
+                	           us->serial, sizeof(us->serial));
 
+readDesEnd:
+	        /* Use the unusual_dev strings if the device didn't provide them */
+        	if (strlen(us->vendor) == 0) {
+                	if (unusual_dev->vendorName)
+                        	strlcpy(us->vendor, unusual_dev->vendorName,
+                                	sizeof(us->vendor));
+	                else
+        	                strcpy(us->vendor, "Unknown");
+	        }        
+		if (strlen(us->product) == 0) {
+                	if (unusual_dev->productName)
+                        	strlcpy(us->product, unusual_dev->productName,
+                                	sizeof(us->product));
+	                else
+        	                strcpy(us->product, "Unknown");
+	        }
+        	if (strlen(us->serial) == 0)
+                	strcpy(us->serial, "None");
+	        US_DEBUGP("Vendor: %s,  Product: %s\n", us->vendor, us->product);
+#endif
 	return 0;
 }
 
@@ -790,17 +844,18 @@ static void quiesce_and_remove_host(struct us_data *us)
 	/* If the device is really gone, cut short reset delays */
 	if (us->pusb_dev->state == USB_STATE_NOTATTACHED) {
 		set_bit(US_FLIDX_DISCONNECTING, &us->dflags);
-		wake_up(&us->delay_wait);
-	}
+                wake_up(&us->delay_wait);
+        }
 
-	/* Prevent SCSI scanning (if it hasn't started yet)
-	 * or wait for the SCSI-scanning routine to stop.
-	 */
-	cancel_delayed_work_sync(&us->scan_dwork);
 
-	/* Balance autopm calls if scanning was cancelled */
-	if (test_bit(US_FLIDX_SCAN_PENDING, &us->dflags))
-		usb_autopm_put_interface_no_suspend(us->pusb_intf);
+        /* Prevent SCSI scanning (if it hasn't started yet)
+         * or wait for the SCSI-scanning routine to stop.
+         */
+        cancel_delayed_work_sync(&us->scan_dwork);
+ 
+        /* Balance autopm calls if scanning was cancelled */
+        if (test_bit(US_FLIDX_SCAN_PENDING, &us->dflags))
+                usb_autopm_put_interface_no_suspend(us->pusb_intf);
 
 	/* Removing the host will perform an orderly shutdown: caches
 	 * synchronized, disks spun down, etc.
@@ -830,25 +885,24 @@ static void release_everything(struct us_data *us)
 /* Delayed-work routine to carry out SCSI-device scanning */
 static void usb_stor_scan_dwork(struct work_struct *work)
 {
-	struct us_data *us = container_of(work, struct us_data,
-			scan_dwork.work);
+        struct us_data *us = container_of(work, struct us_data,
+                       scan_dwork.work);
 	struct device *dev = &us->pusb_intf->dev;
 
-	dev_dbg(dev, "starting scan\n");
 
-	/* For bulk-only devices, determine the max LUN value */
-	if (us->protocol == USB_PR_BULK && !(us->fflags & US_FL_SINGLE_LUN)) {
-		mutex_lock(&us->dev_mutex);
-		us->max_lun = usb_stor_Bulk_max_lun(us);
-		mutex_unlock(&us->dev_mutex);
+        dev_dbg(dev, "starting scan\n");
+        /* For bulk-only devices, determine the max LUN value */
+        if (us->protocol == USB_PR_BULK && !(us->fflags & US_FL_SINGLE_LUN)) {
+                mutex_lock(&us->dev_mutex);
+                us->max_lun = usb_stor_Bulk_max_lun(us);
+                mutex_unlock(&us->dev_mutex);
 	}
-	scsi_scan_host(us_to_host(us));
-	dev_dbg(dev, "scan complete\n");
 
-	/* Should we unbind if no devices were detected? */
-
+        scsi_scan_host(us_to_host(us));
+        dev_dbg(dev, "scan complete\n");
+        /* Should we unbind if no devices were detected? */
 	usb_autopm_put_interface(us->pusb_intf);
-	clear_bit(US_FLIDX_SCAN_PENDING, &us->dflags);
+        clear_bit(US_FLIDX_SCAN_PENDING, &us->dflags);
 }
 
 static unsigned int usb_stor_sg_tablesize(struct usb_interface *intf)
@@ -895,8 +949,8 @@ int usb_stor_probe1(struct us_data **pus,
 	init_completion(&us->cmnd_ready);
 	init_completion(&(us->notify));
 	init_waitqueue_head(&us->delay_wait);
-	INIT_DELAYED_WORK(&us->scan_dwork, usb_stor_scan_dwork);
 
+        INIT_DELAYED_WORK(&us->scan_dwork, usb_stor_scan_dwork);
 	/* Associate the us_data structure with the USB device */
 	result = associate_dev(us, intf);
 	if (result)
@@ -966,14 +1020,14 @@ int usb_stor_probe2(struct us_data *us)
 		goto BadDevice;
 	}
 
-	/* Submit the delayed_work for SCSI-device scanning */
+        /* Submit the delayed_work for SCSI-device scanning */
 	usb_autopm_get_interface_no_resume(us->pusb_intf);
-	set_bit(US_FLIDX_SCAN_PENDING, &us->dflags);
+        set_bit(US_FLIDX_SCAN_PENDING, &us->dflags);
 
-	if (delay_use > 0)
-		dev_dbg(dev, "waiting for device to settle before scanning\n");
-	queue_delayed_work(system_freezable_wq, &us->scan_dwork,
-			delay_use * HZ);
+        if (delay_use > 0)
+               dev_dbg(dev, "waiting for device to settle before scanning\n");
+        queue_delayed_work(system_freezable_wq, &us->scan_dwork,
+                       delay_use * HZ);
 	return 0;
 
 	/* We come here if there are any problems */

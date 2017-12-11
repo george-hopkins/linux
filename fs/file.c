@@ -255,7 +255,7 @@ int expand_files(struct files_struct *files, int nr)
 	 * will limit the total number of files that can be opened.
 	 */
 	if (nr >= rlimit(RLIMIT_NOFILE))
-		return -EMFILE;
+		goto emfile;
 
 	/* Do we need to expand? */
 	if (nr < fdt->max_fds)
@@ -263,10 +263,48 @@ int expand_files(struct files_struct *files, int nr)
 
 	/* Can we expand? */
 	if (nr >= sysctl_nr_open)
-		return -EMFILE;
+		goto emfile;
 
 	/* All good, so we try */
 	return expand_fdtable(files, nr);
+
+emfile :
+
+#ifdef CONFIG_OPEN_FILE_CHECKER
+	{
+		int i;
+		struct file *filp;
+#ifdef CONFIG_FD_PID
+		struct task_struct *p;
+#endif
+		printk(KERN_EMERG "=== [System Arch] File open checker v1.0 ===========\n");
+		printk(KERN_EMERG " There are Too many open files.\n");
+		printk(KERN_EMERG " -- FILE LIST \n");
+
+		for (i = 0; i < files_fdtable(files)->max_fds;  i++) {
+
+			filp= (fdt->fd)[i];
+
+			if(filp != NULL && (filp->f_path).dentry != NULL)
+			{
+
+#ifdef CONFIG_FD_PID
+				p = find_task_by_vpid(filp->pid);
+				printk(KERN_EMERG "%5d : %s - %s(%d)\n", i, (filp->f_path).dentry->d_name.name,
+						p->comm ,filp->pid);
+#else
+				printk(KERN_EMERG "%5d : %s\n", i, (filp->f_path).dentry->d_name.name);
+#endif
+			}
+			else
+			{
+				printk(KERN_EMERG "%5d : fd had been allocated, but freed (e.g. sys_close)\n", i);
+			}
+		}
+		printk(KERN_EMERG "==================================================\n");
+	}
+#endif
+	return -EMFILE;
 }
 
 static int count_open_files(struct fdtable *fdt)

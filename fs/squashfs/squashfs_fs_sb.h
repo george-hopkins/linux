@@ -49,9 +49,19 @@ struct squashfs_cache_entry {
 	wait_queue_head_t	wait_queue;
 	struct squashfs_cache	*cache;
 	void			**data;
+#ifdef CONFIG_GZMANAGER_DECOMPRESS
+#ifdef CONFIG_SQUASHFS_INCL_BIO
+	void			**ibuff;
+#else
+	char			*ibuff;
+#endif
+#endif
 };
 
 struct squashfs_sb_info {
+#ifdef CONFIG_GZMANAGER_DECOMPRESS
+	struct gzM_client *client;
+#endif
 	const struct squashfs_decompressor	*decompressor;
 	int					devblksize;
 	int					devblksize_log2;
@@ -75,5 +85,8 @@ struct squashfs_sb_info {
 	long long				bytes_used;
 	unsigned int				inodes;
 	int					xattr_ids;
+#ifdef CONFIG_SQUASHFS_INCL_BIO
+    wait_queue_head_t  wq; /* bio changes */
+#endif
 };
 #endif

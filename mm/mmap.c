@@ -93,6 +93,177 @@ int sysctl_max_map_count __read_mostly = DEFAULT_MAX_MAP_COUNT;
  */
 struct percpu_counter vm_committed_as ____cacheline_aligned_in_smp;
 
+#ifdef CONFIG_RSS_INFO
+
+#define VMAG_RWXS_MASK  (VM_READ|VM_WRITE|VM_EXEC|VM_SHARED)
+#define VMAG_RWS_MASK  (VM_READ|VM_WRITE|VM_SHARED)
+#define VFN_UP(x)       (((x) + PAGE_SIZE-1) >> PAGE_SHIFT)
+#define VFN_DOWN(x)     ((x) >> PAGE_SHIFT)
+
+int _get_group_idx( struct mm_struct *mm, unsigned long flags,
+		struct file *file, unsigned long start, unsigned long end){
+
+	unsigned int Islibcode = 0;
+	unsigned int Islibdata = 0;
+
+	/* code : (file && (r-xp)) */
+	if ( file && (flags & VMAG_RWXS_MASK) == (VM_READ|VM_EXEC) ) {
+		/*
+		   If the value of mm->end_code,mm->end_data equal zero,
+		   we can't check where this vma is included in.(main region? or library region?)
+		   To reserve this problem we serarch ".so" string in the name of mapped file.
+		   When searching is completed, strstr string library returns valid value(not NULL).
+		   So, we can work around this problem.
+		   If we find better solution, we will fix it.
+		 */
+		Islibcode = (mm->end_code!=0);
+		Islibcode = Islibcode && !(VFN_DOWN(mm->start_code) <= VFN_DOWN(start) && VFN_UP(end) <= VFN_UP(mm->end_code));
+		Islibcode = Islibcode || (mm->end_code==0 && strstr(file->f_dentry->d_iname,".so"));
+
+		if( Islibcode )
+			return VMAG_LIBCODE;
+
+		return VMAG_CODE;
+	}       
+       /* data : (file && (rw*p) && exec file) */
+       else if ( file && (flags & VMAG_RWS_MASK) == (VM_READ|VM_WRITE)
+                       && (file->f_dentry->d_inode->i_mode & S_IXUGO) ) {
+
+		Islibdata = (mm->end_data!=0);
+		Islibdata = Islibdata && !(VFN_DOWN(mm->start_data) <= VFN_DOWN(start) && VFN_UP(end) <= VFN_UP(mm->end_data));
+		Islibdata = Islibdata || (mm->end_data==0 && strstr(file->f_dentry->d_iname,".so"));
+
+		if( Islibdata )
+			return VMAG_LIBDATA;
+
+		return VMAG_DATA;
+	}               
+
+#ifdef  CONFIG_STACK_GROWSUP
+	/* user stack : VM_GROWSUP */
+	else if ( flags & VM_GROWSUP ) {
+		return VMAG_STACK;
+	}
+#else
+	/* user stack : VM_GROWSDOWN */
+	else if ( flags & VM_GROWSDOWN ) {
+		return VMAG_STACK;
+	}
+#endif
+	/*
+	 * heap : (rwxp) && (brk)
+	 *   cond = ((vma->vm_flags & mask) == (VM_READ|VM_WRITE|VM_EXEC)
+	 *   && (vma->vm_start <= mm->start_brk && vma->vm_end > mm->start_brk));
+	 * mmap : anon && (rw-p)
+	 *   cond |= (!vma->vm_file
+	 *   && (vma->vm_flags & mask) == (VM_READ|VM_WRITE));
+	 * shm  : (rw-s)
+	 */
+	else {
+		return VMAG_OTHER;
+	}
+}
+
+int inline get_group_idx(struct vm_area_struct *vma) {
+	return _get_group_idx( vma->vm_mm, vma->vm_flags, vma->vm_file, 
+                        vma->vm_start, vma->vm_end);
+}
+
+void inc_rss_counter(struct vm_area_struct *vma, unsigned long value)
+{
+	struct mm_struct *mm = vma->vm_mm;
+	int idx;
+
+	idx = get_group_idx(vma);
+
+	mm->curr_rss[idx] += value;
+
+	if ( mm->max_rss[idx] <= mm->curr_rss[idx] ) mm->max_rss[idx] += value;
+}
+EXPORT_SYMBOL(inc_rss_counter);
+
+void dec_rss_counter(struct vm_area_struct *vma, unsigned long value)
+{
+	struct mm_struct *mm = vma->vm_mm;
+	int idx;
+
+	idx = get_group_idx(vma);
+
+	mm->curr_rss[idx] -= value;
+}
+EXPORT_SYMBOL(dec_rss_counter);
+
+int get_rss_cnt(struct mm_struct *mm, int group, unsigned long *cur, unsigned long *max)
+{
+	if (cur) *cur = mm->curr_rss[group];
+	if (max) *max = mm->max_rss[group];
+	return 0;
+}
+
+int is_page_present(struct mm_struct *mm, unsigned long address)
+{
+	pgd_t *pgd;
+	pud_t *pud;
+	pmd_t *pmd;
+	pte_t *ptep, pte;
+	unsigned long pfn;
+
+	pgd = pgd_offset(mm, address);
+	if (pgd_none(*pgd) || unlikely(pgd_bad(*pgd)))
+		goto out;
+
+	pud = pud_offset(pgd, address);
+	if (pud_none(*pud) || unlikely(pud_bad(*pud)))
+		goto out;
+
+	pmd = pmd_offset(pud, address);
+	if (pmd_none(*pmd) || unlikely(pmd_bad(*pmd)))
+		goto out;
+
+
+	ptep = pte_offset_map(pmd, address);
+	if (!ptep)
+		goto out;
+
+	pte = *ptep;
+	pte_unmap(ptep);
+	if (pte_present(pte)) {
+		pfn = pte_pfn(pte);
+		if (pfn_valid(pfn)) {
+			return 1;
+		}
+	}
+
+out:
+	return 0;
+}
+
+int get_vma_rss(struct vm_area_struct *vma)
+{
+	int nr = 0;
+	unsigned long addr = vma->vm_start;
+	struct mm_struct *mm = vma->vm_mm;
+
+	spin_lock(&mm->page_table_lock);
+	do {
+		cond_resched_lock(&mm->page_table_lock);
+		nr += is_page_present(mm, addr);
+		addr += PAGE_SIZE;
+	} while(addr < vma->vm_end);
+	spin_unlock(&mm->page_table_lock);
+	return nr;
+}
+
+#else
+int _get_group_idx( struct mm_struct *mm, unsigned long flags, struct file *file, unsigned long start, unsigned long end ) { return 0; }
+int get_group_idx(struct vm_area_struct *vma) { return 0; }
+void inc_rss_counter(struct vm_area_struct *vma, unsigned long value) {}
+void dec_rss_counter(struct vm_area_struct *vma, unsigned long value) {}
+int get_rss_cnt(struct mm_struct *mm, int group, unsigned long *cur, unsigned long *max) { return 0; }
+int is_page_present(struct mm_struct *mm, unsigned long address) { return 0; }
+int get_vma_rss(struct vm_area_struct *vma) { return 0; }
+#endif  /* CONFIG_RSS_INFO */
+
 /*
  * Check that a process has enough memory to allocate a new virtual
  * mapping. 0 means there is enough memory for the allocation to

@@ -303,5 +303,17 @@ config REGULATOR_TPS65910
 	help
 	  This driver supports TPS65910 voltage regulator chips.
 
+config REGULATOR_TPS54921
+	bool "TPS54921 regulator"
+	depends on ARCH_CCEP && SDP_I2C
+	help
+	  This driver supports TPS54921 voltage regulator chips.
+	  
+config REGULATOR_SN1202033
+	bool "SN1202033 regulator"
+	depends on ARCH_CCEP && SDP_I2C
+	help
+	  This driver supports SN1202033 voltage regulator chips.
+
 endif
 

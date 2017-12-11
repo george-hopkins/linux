@@ -5,6 +5,7 @@
 #include <linux/string.h>
 #include <linux/nls.h>
 #include <linux/fs.h>
+#include <linux/hash.h>
 #include <linux/mutex.h>
 #include <linux/ratelimit.h>
 #include <linux/msdos_fs.h>
@@ -46,7 +47,8 @@ struct fat_mount_options {
 		 usefree:1,	  /* Use free_clusters for FAT32 */
 		 tz_utc:1,	  /* Filesystem timestamps are in UTC */
 		 rodir:1,	  /* allow ATTR_RO for directory */
-		 discard:1;	  /* Issue discard requests on deletions */
+		 discard:1,	  /* Issue discard requests on deletions */
+		 nfs:1;		  /* Do extra work needed for NFS export */
 };
 
 #define FAT_HASH_BITS	8
@@ -69,6 +71,7 @@ struct msdos_sb_info {
 	unsigned long root_cluster;  /* first cluster of the root directory */
 	unsigned long fsinfo_sector; /* sector number of FAT32 fsinfo */
 	struct mutex fat_lock;
+	struct mutex nfs_build_inode_lock;
 	unsigned int prev_free;      /* previously allocated cluster number */
 	unsigned int free_clusters;  /* -1 if undefined */
 	unsigned int free_clus_valid; /* is free_clusters valid? */
@@ -82,11 +85,18 @@ struct msdos_sb_info {
 	int fatent_shift;
 	struct fatent_operations *fatent_ops;
 	struct inode *fat_inode;
+	struct inode *fsinfo_inode;
 
 	struct ratelimit_state ratelimit;
 
 	spinlock_t inode_hash_lock;
 	struct hlist_head inode_hashtable[FAT_HASH_SIZE];
+
+	spinlock_t dir_hash_lock;
+	struct hlist_head dir_hashtable[FAT_HASH_SIZE];
+
+	spinlock_t ipos_busy_lock;
+	struct list_head *ipos_list_head;
 };
 
 #define FAT_CACHE_VALID	0	/* special case for valid cache */
@@ -109,6 +119,8 @@ struct msdos_inode_info {
 	int i_attrs;		/* unused attribute bits */
 	loff_t i_pos;		/* on-disk position of directory entry or 0 */
 	struct hlist_node i_fat_hash;	/* hash by i_location */
+	struct hlist_node i_dir_hash;	/* hash by i_logstart */
+	atomic_t i_clnt_open_count;
 	struct inode vfs_inode;
 };
 
@@ -118,6 +130,12 @@ struct fat_slot_info {
 	int nr_slots;		/* number of slots + 1(de) in filename */
 	struct msdos_dir_entry *de;
 	struct buffer_head *bh;
+};
+
+struct ipos_busy_list {
+	struct list_head ipos_list;
+	loff_t i_pos;	/* on disk position for busy directory entry */
+	int nr_slots;
 };
 
 static inline struct msdos_sb_info *MSDOS_SB(struct super_block *sb)
@@ -215,6 +233,21 @@ static inline void fat16_towchar(wchar_t *dst, const __u8 *src, size_t len)
 #endif
 }
 
+static inline int fat_get_start(const struct msdos_sb_info *sbi,
+				const struct msdos_dir_entry *de)
+{
+	int cluster = le16_to_cpu(de->start);
+	if (sbi->fat_bits == 32)
+		cluster |= (le16_to_cpu(de->starthi) << 16);
+	return cluster;
+}
+
+static inline void fat_set_start(struct msdos_dir_entry *de, int cluster)
+{
+	de->start   = cpu_to_le16(cluster);
+	de->starthi = cpu_to_le16(cluster >> 16);
+}
+
 static inline void fatwchar_to16(__u8 *dst, const wchar_t *src, size_t len)
 {
 #ifdef __BIG_ENDIAN
@@ -245,7 +278,7 @@ extern int fat_subdirs(struct inode *dir);
 extern int fat_scan(struct inode *dir, const unsigned char *name,
 		    struct fat_slot_info *sinfo);
 extern int fat_get_dotdot_entry(struct inode *dir, struct buffer_head **bh,
-				struct msdos_dir_entry **de, loff_t *i_pos);
+				struct msdos_dir_entry **de);
 extern int fat_alloc_new_dir(struct inode *dir, struct timespec *ts);
 extern int fat_add_entries(struct inode *dir, void *slots, int nr_slots,
 			   struct fat_slot_info *sinfo);
@@ -291,7 +324,7 @@ static inline void fatent_brelse(struct fat_entry *fatent)
 }
 
 extern void fat_ent_access_init(struct super_block *sb);
-extern int fat_ent_read(struct inode *inode, struct fat_entry *fatent,
+extern int fat_ent_read(struct super_block *sb, struct fat_entry *fatent,
 			int entry);
 extern int fat_ent_write(struct inode *inode, struct fat_entry *fatent,
 			 int new, int wait);
@@ -317,12 +350,23 @@ extern void fat_detach(struct inode *inode);
 extern struct inode *fat_iget(struct super_block *sb, loff_t i_pos);
 extern struct inode *fat_build_inode(struct super_block *sb,
 			struct msdos_dir_entry *de, loff_t i_pos);
+extern int fat_entry_busy(struct msdos_sb_info *sbi, loff_t ipos,
+			struct buffer_head *bh);
 extern int fat_sync_inode(struct inode *inode);
 extern int fat_fill_super(struct super_block *sb, void *data, int silent,
 			  int isvfat, void (*setup)(struct super_block *));
 
 extern int fat_flush_inodes(struct super_block *sb, struct inode *i1,
 		            struct inode *i2);
+extern void fat_remove_busy_entry(struct inode *inode);
+static inline unsigned long fat_dir_hash(int logstart)
+{
+	return hash_32(logstart, FAT_HASH_BITS);
+}
+extern void fat_set_nfs_clnt_open_count(struct inode *inode,
+					u32 clnt_open_count);
+extern int fat_get_nfs_clnt_open_count(struct inode *inode);
+
 /* fat/misc.c */
 extern void
 __fat_fs_error(struct super_block *sb, int report, const char *fmt, ...)
@@ -343,6 +387,14 @@ extern int fat_sync_bhs(struct buffer_head **bhs, int nr_bhs);
 
 int fat_cache_init(void);
 void fat_cache_destroy(void);
+
+/* fat/nfs.c */
+struct fid;
+extern struct dentry *fat_fh_to_dentry(struct super_block *sb, struct fid *fid,
+				       int fh_len, int fh_type);
+extern struct dentry *fat_fh_to_parent(struct super_block *sb, struct fid *fid,
+				       int fh_len, int fh_type);
+extern struct dentry *fat_get_parent(struct dentry *child_dir);
 
 /* helper for printk */
 typedef unsigned long long	llu;

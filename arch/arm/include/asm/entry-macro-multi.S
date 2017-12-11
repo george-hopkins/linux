@@ -13,6 +13,19 @@
 	adrne	lr, BSYM(1b)
 	bne	asm_do_IRQ
 
+#if defined(CONFIG_MSTAR_AMBER3) || defined(CONFIG_MSTAR_EDISON)
+	@Clean nIRQ(31) GIC INT ACK
+	str r6, [r5, #GIC_CPU_EOI]
+#endif
+
+#if defined(CONFIG_MSTAR_EDISON)
+	/*check CA9 watch dog irq */
+	test_for_wdtirq r0, r6, r5, lr
+	movne   r1, sp
+	adrne   lr, BSYM(1b)
+	bne asm_do_IRQ
+#endif
+
 #ifdef CONFIG_SMP
 	/*
 	 * XXX

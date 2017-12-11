@@ -996,6 +996,22 @@ static int proc_connectinfo(struct dev_state *ps, void __user *arg)
 	return 0;
 }
 
+// Newly add
+#ifdef SAMSUNG_PATCH_WITH_USB_HOTPLUG
+static int proc_devpath(struct dev_state *ps, void __user *arg)
+{
+	struct usbdevfs_devpath dp;
+
+	memset(dp.devpath, 0x0, sizeof(dp.devpath));
+	//080507 
+	strncpy(dp.devpath, ps->dev->devbusportpath, sizeof(dp.devpath)-1);
+	
+	if (copy_to_user(arg, &dp, sizeof(dp)))
+		return -EFAULT; 
+	return 0;
+}
+#endif
+
 static int proc_resetdevice(struct dev_state *ps)
 {
 	return usb_reset_device(ps->dev);
@@ -1838,6 +1854,14 @@ static long usbdev_do_ioctl(struct file *file, unsigned int cmd,
 		snoop(&dev->dev, "%s: CONNECTINFO\n", __func__);
 		ret = proc_connectinfo(ps, p);
 		break;
+
+#ifdef SAMSUNG_PATCH_WITH_USB_HOTPLUG  
+	//add for usb devpath
+	case USBDEVFS_DEVPATH:
+		snoop(&dev->dev, "%s: DEVPATH\n", __func__);
+		ret = proc_devpath(ps, p);
+  	  	break;
+#endif
 
 	case USBDEVFS_SETINTERFACE:
 		snoop(&dev->dev, "%s: SETINTERFACE\n", __func__);

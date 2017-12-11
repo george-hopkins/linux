@@ -20,6 +20,10 @@
 #include <asm/pgtable.h>
 #include <asm/system.h>
 
+#if (defined(CONFIG_MSTAR_AMBER1) || defined(CONFIG_MSTAR_EMERALD))
+#include <linux/module.h>
+#endif
+
 extern void build_tlb_refill_handler(void);
 
 /*
@@ -337,8 +341,13 @@ void __update_tlb(struct vm_area_struct * vma, unsigned long address, pte_t pte)
 	EXIT_CRITICAL(flags);
 }
 
+#if (defined(CONFIG_MSTAR_AMBER1) || defined(CONFIG_MSTAR_EMERALD))
+void add_wired_entry(unsigned long entrylo0, unsigned long entrylo1,
+	unsigned long entryhi, unsigned long pagemask)
+#else
 void __init add_wired_entry(unsigned long entrylo0, unsigned long entrylo1,
 	unsigned long entryhi, unsigned long pagemask)
+#endif
 {
 	unsigned long flags;
 	unsigned long wired;
@@ -367,6 +376,9 @@ void __init add_wired_entry(unsigned long entrylo0, unsigned long entrylo1,
 	local_flush_tlb_all();
 	EXIT_CRITICAL(flags);
 }
+#if (defined(CONFIG_MSTAR_AMBER1) || defined(CONFIG_MSTAR_EMERALD))
+EXPORT_SYMBOL(add_wired_entry);
+#endif 
 
 /*
  * Used for loading TLB entries before trap_init() has started, when we

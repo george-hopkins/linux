@@ -158,6 +158,18 @@ static inline const char *get_task_state(struct task_struct *tsk)
 	return *p;
 }
 
+
+#ifdef CONFIG_BOOTPROFILE
+/* Function for bootchart */
+const char *sec_bp_get_task_state(struct task_struct *tsk)
+{
+	if (tsk)
+		return get_task_state(tsk);
+
+	return NULL;
+}
+#endif
+
 static inline void task_state(struct seq_file *m, struct pid_namespace *ns,
 				struct pid *pid, struct task_struct *p)
 {

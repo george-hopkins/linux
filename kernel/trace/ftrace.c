@@ -1215,7 +1215,13 @@ ftrace_hash_move(struct ftrace_ops *ops, int enable,
 	if (!src->count) {
 		free_ftrace_hash_rcu(*dst);
 		rcu_assign_pointer(*dst, EMPTY_HASH);
+#ifndef CONFIG_KDEBUGD_FTRACE
 		return 0;
+#else
+		/* still need to update the function records */
+		ret = 0;
+		goto out;
+#endif /* CONFIG_KDEBUGD_FTRACE */
 	}
 
 	/*
@@ -4212,3 +4218,8 @@ void ftrace_graph_stop(void)
 	ftrace_stop();
 }
 #endif
+
+#ifdef CONFIG_KDEBUGD_FTRACE
+/* Let kdebugd have access to static functions in this file */
+#include "../kdebugd/trace/kdbg_ftrace_dyn_helper.c"
+#endif /* CONFIG_KDEBUGD_FTRACE */

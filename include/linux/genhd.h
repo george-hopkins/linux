@@ -178,7 +178,7 @@ struct gendisk {
 	const struct block_device_operations *fops;
 	struct request_queue *queue;
 	void *private_data;
-
+	unsigned int sector_size;
 	int flags;
 	struct device *driverfs_dev;  // FIXME: remove
 	struct kobject *slave_dir;

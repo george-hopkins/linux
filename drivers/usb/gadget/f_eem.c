@@ -30,6 +30,10 @@
 
 #define EEM_HLEN 2
 
+#ifdef CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_COMMON
+static struct dual_eem_gadget dual_eem;
+#endif	// CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_COMMON
+
 /*
  * This function is a "CDC Ethernet Emulation Model" (CDC EEM)
  * Ethernet link.
@@ -43,6 +47,10 @@ struct eem_ep_descs {
 struct f_eem {
 	struct gether			port;
 	u8				ctrl_id;
+#ifdef CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_COMMON
+	void*			dev_info;
+	u8				devnum;
+#endif	// CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_COMMON
 
 	struct eem_ep_descs		fs;
 	struct eem_ep_descs		hs;
@@ -164,6 +172,7 @@ static int eem_set_alt(struct usb_function *f, unsigned intf, unsigned alt)
 	struct f_eem		*eem = func_to_eem(f);
 	struct usb_composite_dev *cdev = f->config->cdev;
 	struct net_device	*net;
+	int	reset_called = 0;
 
 	/* we know alt == 0, so this is an activation or a reset */
 	if (alt != 0)
@@ -174,6 +183,7 @@ static int eem_set_alt(struct usb_function *f, unsigned intf, unsigned alt)
 		if (eem->port.in_ep->driver_data) {
 			DBG(cdev, "reset eem\n");
 			gether_disconnect(&eem->port);
+			reset_called = 1;
 		}
 
 		if (!eem->port.in) {
@@ -196,6 +206,13 @@ static int eem_set_alt(struct usb_function *f, unsigned intf, unsigned alt)
 	} else
 		goto fail;
 
+	if(reset_called) {
+		if (eem->ctrl_id)
+			is_enable_usb1 = 1;
+		else
+			is_enable_usb0 = 1;
+	}
+	netif_wake_queue(net);
 	return 0;
 fail:
 	return -EINVAL;
@@ -345,6 +362,9 @@ static struct sk_buff *eem_wrap(struct gether *port, struct sk_buff *skb)
 				(headroom >= EEM_HLEN))
 			goto done;
 	}
+	else
+		if (((len + EEM_HLEN + ETH_FCS_LEN) % in->maxpacket) == 0)
+			padlen = 2;
 
 	skb2 = skb_copy_expand(skb, EEM_HLEN, ETH_FCS_LEN + padlen, GFP_ATOMIC);
 	dev_kfree_skb_any(skb);
@@ -379,8 +399,12 @@ static int eem_unwrap(struct gether *port,
 			struct sk_buff *skb,
 			struct sk_buff_head *list)
 {
-	struct usb_composite_dev	*cdev = port->func.config->cdev;
 	int				status = 0;
+#ifdef H_D_THROUGHPUT_IMPROVEMENT
+	skb_queue_tail(list, skb);
+	return status;
+#else
+	struct usb_composite_dev	*cdev = port->func.config->cdev;
 
 	do {
 		struct sk_buff	*skb2;
@@ -510,6 +534,7 @@ next:
 error:
 	dev_kfree_skb_any(skb);
 	return status;
+#endif
 }
 
 /**
@@ -556,6 +581,13 @@ int __init eem_bind_config(struct usb_configuration *c)
 	eem->port.wrap = eem_wrap;
 	eem->port.unwrap = eem_unwrap;
 	eem->port.header_len = EEM_HLEN;
+
+#ifdef CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_COMMON
+	eem->dev_info = &dual_eem;
+	eem->devnum = dual_eem.eem_num;
+	eem->port.dev_info = &dual_eem;
+	eem->port.devnum = dual_eem.eem_num;
+#endif	// CONFIG_SAMSUNG_PATCH_WITH_USB_GADGET_COMMON
 
 	status = usb_add_function(c, &eem->port.func);
 	if (status)

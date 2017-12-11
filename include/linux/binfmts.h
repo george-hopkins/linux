@@ -20,7 +20,7 @@ struct pt_regs;
 #ifdef __KERNEL__
 #include <linux/list.h>
 
-#define CORENAME_MAX_SIZE 128
+#define CORENAME_MAX_SIZE 96 
 
 /*
  * This structure is used to hold the arguments that are used when loading binaries.

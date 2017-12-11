@@ -15,7 +15,7 @@
 #include <linux/sched.h>
 #include <linux/syscalls.h>
 #include <linux/mm.h>
-
+#include <linux/highmem.h>
 #include <asm/cacheflush.h>
 #include <asm/processor.h>
 #include <asm/cpu.h>
@@ -52,6 +52,9 @@ void (*_dma_cache_wback)(unsigned long start, unsigned long size);
 void (*_dma_cache_inv)(unsigned long start, unsigned long size);
 
 EXPORT_SYMBOL(_dma_cache_wback_inv);
+#ifdef CONFIG_NVT_CHIP
+EXPORT_SYMBOL(_dma_cache_inv);
+#endif
 
 #endif /* CONFIG_DMA_NONCOHERENT */
 
@@ -75,10 +78,33 @@ SYSCALL_DEFINE3(cacheflush, unsigned long, addr, unsigned long, bytes,
 void __flush_dcache_page(struct page *page)
 {
 	struct address_space *mapping = page_mapping(page);
-	unsigned long addr;
+	unsigned long addr = 0;
 
-	if (PageHighMem(page))
+	if (PageHighMem(page)){
+		/* mips dcache flush didn't take care of high memory pages 
+		 * when it needs to be flushed. So we will care the pages 
+		 * by mapping the page to some place temporarily and flushing into it.
+		 * 
+		 * __flush_dcache_page might be called from irq context. 
+		 * KM_IRQ should be used instead of KM_USERx when in irq.
+		 *
+		 * written by joongyu.sun (joongyu.sun@samsung.com) */
+		if(in_irq()){
+			unsigned long flag = 0;
+			local_irq_save(flag);
+			addr = (unsigned long) kmap_atomic(page, KM_IRQ1 );
+			flush_data_cache_page(addr);
+			kunmap_atomic((void *)addr, KM_IRQ1);
+			local_irq_restore(flag);
+
+
+		}else {
+			addr = (unsigned long) kmap_atomic(page, in_softirq() ? KM_SOFTIRQ1 : KM_USER1);
+			flush_data_cache_page(addr);
+			kunmap_atomic((void *)addr, in_stftirq() ? KM_SOFTIRQ1 : KM_USER1);
+		}
 		return;
+	}
 	if (mapping && !mapping_mapped(mapping)) {
 		SetPageDcacheDirty(page);
 		return;
@@ -124,7 +150,7 @@ void __update_cache(struct vm_area_struct *vma, unsigned long address,
 	if (unlikely(!pfn_valid(pfn)))
 		return;
 	page = pfn_to_page(pfn);
-	if (page_mapping(page) && Page_dcache_dirty(page)) {
+	if (Page_dcache_dirty(page)) {
 		addr = (unsigned long) page_address(page);
 		if (exec || pages_do_alias(addr, address & PAGE_MASK))
 			flush_data_cache_page(addr);

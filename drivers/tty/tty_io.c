@@ -103,6 +103,9 @@
 #include <linux/selection.h>
 
 #include <linux/kmod.h>
+#ifdef CONFIG_KDEBUGD
+#include <kdebugd/kdebugd.h>
+#endif
 #include <linux/nsproxy.h>
 
 #undef TTY_DEBUG_HANGUP
@@ -156,6 +159,12 @@ static void release_tty(struct tty_struct *tty, int idx);
 static void __proc_set_tty(struct task_struct *tsk, struct tty_struct *tty);
 static void proc_set_tty(struct task_struct *tsk, struct tty_struct *tty);
 
+/* VDLinux, based SELP.Mstar default patch No.15,
+ *    n_tty serial input disable, SP Team 2010-01-29 */
+#ifdef CONFIG_SERIAL_INPUT_MANIPULATION
+extern struct tty_struct *INPUT_tty;
+#endif
+
 /**
  *	alloc_tty_struct	-	allocate a tty object
  *
@@ -183,6 +192,16 @@ void free_tty_struct(struct tty_struct *tty)
 {
 	if (tty->dev)
 		put_device(tty->dev);
+#ifdef CONFIG_SERIAL_INPUT_MANIPULATION
+        if( tty == INPUT_tty )
+        {
+#ifdef CONFIG_SERIAL_INPUT_ENABLE_HELP_MSG
+                printk(KERN_ALERT "[SERIAL INPUT MANAGE] Managed tty_struct(.name:%s) is freed !!!\n",
+                                        tty->name);
+#endif
+                INPUT_tty = NULL;
+        }
+#endif
 	kfree(tty->write_buf);
 	tty_buffer_free_all(tty);
 	kfree(tty);
@@ -885,6 +904,11 @@ void no_tty(void)
 void stop_tty(struct tty_struct *tty)
 {
 	unsigned long flags;
+#ifdef CONFIG_BLOCK_STOP_TTY
+   printk (KERN_ALERT "[SELP:%s:%d] stop_tty() is blocked!!\n", __FILE__, __LINE__);
+   return;
+#endif
+
 	spin_lock_irqsave(&tty->ctrl_lock, flags);
 	if (tty->stopped) {
 		spin_unlock_irqrestore(&tty->ctrl_lock, flags);
@@ -1061,10 +1085,31 @@ static inline ssize_t do_tty_write(
 		size_t size = count;
 		if (size > chunk)
 			size = chunk;
+#ifdef CONFIG_KDEBUGD
+#ifdef CONFIG_KDEBUGD_BG
+		if (kdebugd_running && tty->index == CONFIG_SERIAL_INPUT_MANIPULATION_PORTNUM && kdbg_print_off() && !kdbg_mode)
+#else
+		if (kdebugd_running && tty->index == CONFIG_SERIAL_INPUT_MANIPULATION_PORTNUM && kdbg_print_off())
+#endif
+			/* CHANGES: Namit 07-Jul-2010, changed ret = -EFAULT to ret= size.
+			 * pretending written in the console. do not sent error.*/
+			ret = size;
+		else {
+			/* CHANGES: Namit 07-Jul-2010, dont write the user buffer to tty buffer ,
+			 * until it's not suppose to write in the console*/
+
+			ret = -EFAULT;
+			if (copy_from_user(tty->write_buf, buf, size))
+				break;
+			ret = write(tty, file, tty->write_buf, size);
+		}
+#else
+
 		ret = -EFAULT;
 		if (copy_from_user(tty->write_buf, buf, size))
 			break;
 		ret = write(tty, file, tty->write_buf, size);
+#endif
 		if (ret <= 0)
 			break;
 		written += ret;
@@ -1151,8 +1196,13 @@ static ssize_t tty_write(struct file *file, const char __user *buf,
 	ld = tty_ldisc_ref_wait(tty);
 	if (!ld->ops->write)
 		ret = -EIO;
-	else
+	else{
+#ifdef CONFIG_DTVLOGD
+		/* Write printf messages to dlog buffer */
+		do_dtvlog(11, buf, count);
+#endif
 		ret = do_tty_write(ld->ops->write, tty, file, buf, count);
+	}
 	tty_ldisc_deref(ld);
 	return ret;
 }

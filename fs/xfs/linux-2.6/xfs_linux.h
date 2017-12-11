@@ -141,6 +141,7 @@
 #define ENOATTR		ENODATA		/* Attribute not found */
 #define EWRONGFS	EINVAL		/* Mount with wrong filesystem type */
 #define EFSCORRUPTED	EUCLEAN		/* Filesystem is corrupted */
+#define EFMT		ENOTRECOVERABLE
 
 #define SYNCHRONIZE()	barrier()
 #define __return_address __builtin_return_address(0)
