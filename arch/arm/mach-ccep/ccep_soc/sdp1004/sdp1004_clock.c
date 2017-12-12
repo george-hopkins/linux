@@ -36,7 +36,7 @@ struct clk {
 
 
 static LIST_HEAD(clocks);
-static DECLARE_MUTEX(clocks_sem);
+static DEFINE_SEMAPHORE(clocks_sem);
 
 static int sdp1004_init_clock(void);
 /* Linux kernel -2.6 clock API */
