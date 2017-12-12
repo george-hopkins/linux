@@ -67,7 +67,7 @@ config ARCH_SDP1207_EVAL
 config ARCH_CCEP_SMP
 	bool "SDP SoC Support SMP"
 	depends on ARCH_CCEP_SOC_CA9 || ARCH_CCEP_SOC_CA15
-	depends on !ARCH_SDP1004 || !ARCH_SDP1004FPGA
+	depends on !ARCH_SDP1004 && !ARCH_SDP1004FPGA
 	default y
 	default n if ARCH_CCEP_FPGA
 	select SMP
@@ -76,7 +76,7 @@ config ARCH_CCEP_SMP
 config ARCH_CCEP_GIC
 	bool "SDP SoC Enable GIC"
 	depends on ARCH_CCEP_SOC_CA9 || ARCH_CCEP_SOC_CA15
-	depends on !ARCH_SDP1004 || !ARCH_SDP1004FPGA || !ARCH_CCEP_SMP
+	depends on !ARCH_SDP1004 && !ARCH_SDP1004FPGA && !ARCH_CCEP_SMP
 	default y
 	select ARM_GIC
 
