@@ -11,7 +11,9 @@ obj-$(CONFIG_SDP_TICK_TIMER)	+= sdp_timer.o
 obj-$(CONFIG_SDP_HR_TIMER)	+= sdp_hrtimer.o
 obj-$(CONFIG_SDP_TICK_TIMER64)	+= sdp_timer64.o
 obj-$(CONFIG_SDP_HR_TIMER64)	+= sdp_hrtimer64.o
+ifneq ($(CONFIG_ARCH_SDP1004),y)
 obj-$(CONFIG_SDP_GPIO)		+= sdp_gpio.o
+endif
 
 ifneq ($(CONFIG_ARCH_SDP1004),y)
 ifneq ($(CONFIG_ARCH_SDP1002),y)
