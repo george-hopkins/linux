@@ -73,6 +73,7 @@
 #include <linux/platform_device.h>
 #include <linux/cdev.h>
 #include <linux/interrupt.h>
+#include <linux/sched.h>
 #include <linux/delay.h>
 #include <linux/vmalloc.h>
 
@@ -1032,8 +1033,8 @@ static int major;
 static struct class *sdp_i2c_class;
 static struct cdev sdp_i2c_cdev;
 
-static int 
-sdp_i2c_ioctl(struct inode *inode, struct file *file, unsigned int cmd, unsigned long args)
+static long
+sdp_i2c_ioctl(struct file *file, unsigned int cmd, unsigned long args)
 {
 	int retVal = 0;
 	u8 subAddr[4]; 
@@ -1325,7 +1326,7 @@ static const struct file_operations sdp_i2c_fops = {
 	.owner = THIS_MODULE,
 	.open  = sdp_i2c_open,
 	.release = sdp_i2c_release,
-	.ioctl = sdp_i2c_ioctl,
+	.unlocked_ioctl = sdp_i2c_ioctl,
 };
 
 
