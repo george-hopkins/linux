@@ -53,43 +53,42 @@ const static SDP_INTR_ATTR_T g_intr_attr[] = SDP_INTERRUPT_RESOURCE;
 static unsigned long intrDisableFlag = 0xFFFFFFFF;
 static unsigned long intrMaskSave[NR_IRQS];
 
-static void sdp_enable_irq(unsigned int irq)
+static void sdp_enable_irq(struct irq_data *data)
 {
 	unsigned long flags;
 
 	spin_lock_irqsave(&lockIrq, flags);
-	intrDisableFlag &= ~(1 << irq);
-	INTMSK_UNMASK(irq);
+	intrDisableFlag &= ~(1 << data->irq);
+	INTMSK_UNMASK(data->irq);
 	spin_unlock_irqrestore(&lockIrq, flags);
 }
 
-static void sdp_disable_irq(unsigned int irq)
+static void sdp_disable_irq(struct irq_data *data)
 {
 	unsigned long flags;
 
 	spin_lock_irqsave(&lockIrq, flags);
-	intrDisableFlag |= (1 << irq);
-	intrMaskSave[irq] |= (1 << irq);
-	INTMSK_MASK(irq);	
-	INTPND_I_CLEAR(irq);
+	intrDisableFlag |= (1 << data->irq);
+	intrMaskSave[data->irq] |= (1 << data->irq);
+	INTMSK_MASK(data->irq);
+	INTPND_I_CLEAR(data->irq);
 	spin_unlock_irqrestore(&lockIrq, flags);
 }
 
-static void sdp_ack_irq(unsigned int irq)
+static void sdp_ack_irq(struct irq_data *data)
 {
-	INTPND_I_CLEAR(irq);	/* offset 0x40 */
+	INTPND_I_CLEAR(data->irq);	/* offset 0x40 */
 }
 
-static void sdp_mask_irq(unsigned int irq)
+static void sdp_mask_irq(struct irq_data *data)
 {
-	struct irq_desc *desc = irq_to_desc(irq);
-	if (unlikely(desc->status & IRQ_DISABLED)) {
-		INTMSK_MASK(irq);	
-		INTPND_I_CLEAR(irq);
-		printk (KERN_WARNING "[WARNING] mask_irq:%d called with IRQ_DISABLED.\n", irq);
+	if (irqd_irq_disabled(data)) {
+		INTMSK_MASK(data->irq);
+		INTPND_I_CLEAR(data->irq);
+		printk (KERN_WARNING "[WARNING] mask_irq:%d called with IRQD_IRQ_DISABLED.\n", data->irq);
 	} else {
 		// save previous interrupt mask
-		intrMaskSave[irq] = R_INTC(0, mask);				  
+		intrMaskSave[data->irq] = R_INTC(0, mask);
 		// prioriry mask
 //		R_INTC(0,mask) = g_intr_attr[irq].prioMask | intrDisableFlag;   // interrupt nesting 
 		R_INTC(0,mask) = 0xFFFFFFFF;
@@ -98,15 +97,15 @@ static void sdp_mask_irq(unsigned int irq)
 	}
 }
 
-static void sdp_unmask_irq(unsigned int irq)
+static void sdp_unmask_irq(struct irq_data *data)
 {
-	R_INTC(0,mask) = intrMaskSave[irq] | intrDisableFlag;
+	R_INTC(0,mask) = intrMaskSave[data->irq] | intrDisableFlag;
 }
 
-static int sdp_set_type(unsigned int irq, unsigned int flow_type)
+static int sdp_set_type(struct irq_data *data, unsigned int flow_type)
 {
-	if(!(g_intr_attr[irq].level & LEVEL_ATTR_EXT)){
-		printk(KERN_INFO"[irq] %d fixed interrupt type\n", irq);
+	if(!(g_intr_attr[data->irq].level & LEVEL_ATTR_EXT)){
+		printk(KERN_INFO "[irq] %d fixed interrupt type\n", data->irq);
 		return 0;
 	}
 /* TODO */
@@ -117,13 +116,13 @@ static int sdp_set_type(unsigned int irq, unsigned int flow_type)
 
 
 static struct irq_chip sdp_intctl = {
-	.name   = SDP_INTC_NAME,		
-	.enable = sdp_enable_irq,
-	.disable = sdp_disable_irq,
-	.ack	= sdp_ack_irq,
-	.mask	= sdp_mask_irq,
-	.unmask	= sdp_unmask_irq,
-	.set_type = sdp_set_type,
+	.name   = SDP_INTC_NAME,
+	.irq_enable = sdp_enable_irq,
+	.irq_disable = sdp_disable_irq,
+	.irq_ack	= sdp_ack_irq,
+	.irq_mask	= sdp_mask_irq,
+	.irq_unmask	= sdp_unmask_irq,
+	.irq_set_type = sdp_set_type,
 };
 
 void __init sdp_init_irq(void)
@@ -149,19 +148,19 @@ void __init sdp_init_irq(void)
 
 	/* register interrupt resource */
 	for (i = 0; i < NR_IRQS; i++) {
-		set_irq_chip(i, &sdp_intctl);
+		irq_set_chip(i, &sdp_intctl);
 		switch(g_intr_attr[i].level) {
 			case (LEVEL_EDGE):
 			case (LEVEL_EDGE_EXT):
-				set_irq_handler(i, handle_edge_irq);
+				irq_set_handler(i, handle_edge_irq);
 				break;
 			case (LEVEL_LEVEL):
 			case (LEVEL_LEVEL_EXT):
 			default:
-				set_irq_handler(i, handle_level_irq);
+				irq_set_handler(i, handle_level_irq);
 				break;
 		}
-		set_irq_flags(i, IRQF_VALID | IRQF_PROBE);
+		irq_clear_status_flags(i, IRQ_NOREQUEST | IRQ_NOPROBE);
 	}
 
 	R_INTC(0, control) = INTCON_FIQ_DIS | INTCON_VECTORED;
