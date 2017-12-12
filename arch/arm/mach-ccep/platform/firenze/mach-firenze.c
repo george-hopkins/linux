@@ -166,23 +166,14 @@ firenze_fixup(struct machine_desc *mdesc, struct tag *tags, char ** cmdline, str
 
 	meminfo->bank[0].start = MACH_MEM0_BASE;
 	meminfo->bank[0].size =  sdp_sys_mem0_size;
-	meminfo->bank[0].node =  0;
 	meminfo->nr_banks = 1;
 
 #if defined(CONFIG_SDP_DISCONTIGMEM_SUPPORT) || defined(CONFIG_SDP_SPARSEMEM_SUPPORT)
 	meminfo->bank[1].start = MACH_MEM1_BASE;
 	meminfo->bank[1].size =  sdp_sys_mem1_size;
-	meminfo->bank[1].node =  0;
-#ifndef CONFIG_SDP_SPARSEMEM_SUPPORT
-	meminfo->bank[1].node =  1;
-#endif
 
 	meminfo->bank[2].start = MACH_MEM2_BASE;
 	meminfo->bank[2].size =  sdp_sys_mem2_size;
-	meminfo->bank[2].node =  0;
-#ifndef CONFIG_SDP_SPARSEMEM_SUPPORT
-	meminfo->bank[2].node =  2;
-#endif
 
 	if(meminfo->bank[2].size == 0)
 		meminfo->nr_banks = 2;
@@ -214,7 +205,6 @@ firenze_fixup(struct machine_desc *mdesc, struct tag *tags, char ** cmdline, str
 #elif defined(CONFIG_SDP_SINGLE_DDR_B)
 	meminfo->bank[0].start = MACH_MEM1_BASE;
 	meminfo->bank[0].size =  sdp_sys_mem1_size;
-	meminfo->bank[0].node =  0;
 
 	printk("Board Memory : DDR-B, 0x80000000\n");
 #endif
@@ -244,8 +234,6 @@ int sdp_get_mem_cfg(int nType)
 EXPORT_SYMBOL(sdp_get_mem_cfg);
 
 MACHINE_START(SDP1004_FIRENZE, "Samsung SDP1004 Evaluation board")
-	.phys_io  = PA_IO_BASE0,
-	.io_pg_offst = VA_IO_BASE0,
 	.boot_params  = (PHYS_OFFSET + 0x100),
 	.map_io		= firenze_map_io,
 	.init_irq	= sdp_init_irq,
