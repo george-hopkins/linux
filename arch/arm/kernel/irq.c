@@ -148,10 +148,6 @@ asm_do_IRQ(unsigned int irq, struct pt_regs *regs)
 	udelay(2);
 #endif
 
-#ifdef CONFIG_ARCH_CCEP
-	if(g_irq_print)show_irq();
-#endif
-
 	irq_enter();
 
 	/*
