@@ -61,6 +61,16 @@
 #define PA_INTC_BASE          (0x30090F00)
 #define VA_INTC_BASE          (PA_INTC_BASE + DIFF_IO_BASE0)
 
+/* Ethernet Controller Register */
+#define PA_SDP_GMAC_BASE                (0x300A0000UL)
+#define PA_SDP_GMAC_MMC_BASE            (PA_SDP_GMAC_BASE + SDP_GMAC_MMC_BASE)
+#define PA_SDP_GMAC_TIME_STAMP_BASE     (PA_SDP_GMAC_BASE + SDP_GMAC_TIME_STAMP_BASE)
+#define PA_SDP_GMAC_MAC_2ND_BLOCK_BASE  (PA_SDP_GMAC_BASE + SDP_GMAC_MAC_2ND_BLOCK_BASE)
+#define PA_SDP_GMAC_DMA_BASE            (PA_SDP_GMAC_BASE + SDP_GMAC_DMA_BASE)
+#define IRQ_SDP_GMAC                    (16)
+#define GMAC_PHY_ID                     (3)
+#define SDP_GMAC_BUS                    (32)
+
 /* Watchdog Register */
 #define PA_WDT_BASE           (0x30090600)
 #define VA_WDT_BASE           (PA_WDT_BASE + DIFF_IO_BASE0)
