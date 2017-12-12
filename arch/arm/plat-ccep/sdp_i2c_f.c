@@ -1357,7 +1357,7 @@ static int __devinit i2c_init(struct i2c_ctrl_t * pPort)
 	DPRINTK_I2C_FLOW("R_I2C_CONE is 0x%x\n", R_I2C_CONE);
 
 // initialize mutex resource 
-	init_MUTEX(&pPort->mutex);
+	sema_init(&pPort->mutex, 1);
 
 // initialize synchronize resource 
 	init_waitqueue_head(&pPort->syncQueue);
