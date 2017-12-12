@@ -3373,10 +3373,6 @@ static int __devinit sdpGmac_drv_probe (struct platform_device *pDev)
 
 	pNetDev->dma = (unsigned char) -1;
 	pGmacDev = netdev_priv(pNetDev);
-#ifdef CONFIG_ARCH_SDP1004
-	pGmacDev->revision = sdp_get_revision_id();
-	dev_info(&pDev->dev, "Firenze revision %d\n", pGmacDev->revision);
-#endif
 	pGmacDev->pNetDev = pNetDev;
 // need to request dma memory
 	pGmacDev->pDev = &pDev->dev;

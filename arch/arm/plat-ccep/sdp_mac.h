@@ -182,10 +182,6 @@ typedef struct {
 	SDP_GMAC_MAC_2ND_BLOCK_T 	*pMac2ndBlk;
 	SDP_GMAC_DMA_T 		 	*pDmaBase;
 
-#ifdef CONFIG_ARCH_SDP1004
-	int				revision;
-#endif
-
 	struct mii_bus *mdiobus;
 	struct phy_device *phydev;
 	int has_gmac;
